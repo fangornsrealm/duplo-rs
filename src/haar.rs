@@ -18,9 +18,9 @@ impl Coef {
     }
 
     pub fn subtract(&mut self, offset: Coef) {
-        self.c[0] += offset.c[0];
-        self.c[1] += offset.c[2];
-        self.c[2] += offset.c[2];
+        self.c[0] -= offset.c[0];
+        self.c[1] -= offset.c[1];
+        self.c[2] -= offset.c[2];
     }
 
     pub fn divide(&mut self, value: f64) {
@@ -119,14 +119,11 @@ pub fn color_to_coef(color: &image::Rgba<u8>) -> Coef {
 	//r32, g32, b32, _ := gen.RGBA()
     let rgb = Vec::from(color.channels());
     let ru = rgb[0] as usize;
-    let rus = ru >> 8;
-    let r = rus as f64;
+    let r = ru as f64;
     let gu = rgb[1] as usize;
-    let gus = gu >> 8;
-    let g = gus as f64;
+    let g = gu as f64;
     let bu = rgb[2] as usize;
-    let bus = bu >> 8;
-    let b = bus as f64;
+    let b = bu as f64;
 	//r, g, b := float64(r32>>8), float64(g32>>8), float64(b32>>8)
 	
 	coef.c[0] = (0.299900*r + 0.587000*g + 0.114000*b) / 0x100 as f64;
@@ -146,7 +143,9 @@ pub fn transform(img: &image::RgbaImage) -> CoefMatrix {
         height = height | 1;
     }
     let reservelen :usize = width as usize * height as usize;
-    matrix.coefs.reserve(reservelen);
+    for _ in 0..reservelen {
+        matrix.coefs.push(Coef::new());
+    }
     matrix.width = width;
     matrix.height = height;
 
@@ -154,7 +153,7 @@ pub fn transform(img: &image::RgbaImage) -> CoefMatrix {
 	for row in 0..height as usize {
 		for column in 0..width as usize {
 			matrix.coefs[row*width as usize +column] = 
-                color_to_coef(img.get_pixel(column as u32, row as u32))
+                color_to_coef(img.get_pixel(column as u32, row as u32));
 		}
 	}
 
@@ -265,7 +264,7 @@ fn test_coef() {
 	let copy_coef = coef.clone();
 	assert_eq!(equal(&copy_coef, &Coef::from(1.0, 2.0, 3.0)), true);
 
-	let offset = Coef::from(2.0, 4.0, 5.0);
+	let offset = Coef::from(2.0, 4.0, 6.0);
 	coef.add(offset.clone());
 	assert_eq!(equal(&coef, &Coef::from(3.0, 6.0, 9.0)), true);
 
