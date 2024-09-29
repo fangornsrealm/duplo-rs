@@ -95,6 +95,9 @@ impl Matches {
 
     pub fn sort(&mut self) {
         // we use Bubble sort until someone wants to spend the time
+        if self.m.len() == 0 {
+            return;
+        }
         for i in 0..self.m.len() - 1 {
             for j in i+1..self.len() {
                 if self.less(j, i) {
