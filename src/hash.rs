@@ -112,6 +112,9 @@ pub fn create_hash(img: &image::RgbaImage) -> (Hash, image::RgbaImage) {
 /// values v with abs(v) < threshold, you will end up with k values.
 pub fn coef_threshold(coefs: &Vec<crate::haar::Coef>, k: i32, n: usize) -> f64 {
     // It's the QuickSelect algorithm.
+    if coefs.len() == 0 {
+        return 0.0;
+    }
     let mut rng = rand::thread_rng();
     let randomindex = rng.gen_range(0..coefs.len());
     let pivot = coefs[randomindex].c[n].abs();
@@ -147,12 +150,28 @@ pub fn coef_thresholds(coefs: &mut Vec<crate::haar::Coef>, k: i32) -> crate::haa
     thresholds
 }
 
+fn clamp(val: i32) -> u8 {
+    match val {
+        ref v if *v < 0 => 0,
+        ref v if *v > 255 => 255,
+        v => v as u8,
+    }
+}
+
 /// ycbcr returns the YCbCr values for the given colour, converting to them if
 /// necessary.
 fn ycbcr(color: &image::Rgba<u8>) -> (u8, u8, u8) {
     //let rgb = Vec::from(color.channels());
-    let ycbcr = Vec::from(color.to_luma().channels());
-    (ycbcr[0], ycbcr[1], ycbcr[2])
+    let rgb = color.channels();
+    let r = i32::from(rgb[0]);
+    let g = i32::from(rgb[1]);
+    let b = i32::from(rgb[2]);
+    let mut yuv = vec![0; 3];
+    yuv[0] = clamp((77 * r + 150 * g + 29 * b + 128) >> 8);
+    yuv[0] = clamp(((-43 * r - 84 * g + 127 * b + 128) >> 8) + 128);
+    yuv[0] = clamp(((127 * r - 106 * g - 21 * b + 128) >> 8) + 128);
+
+    (yuv[0], yuv[1], yuv[2])
 }
 
 /// dHash computes a 128 bit vector by comparing adjacent pixels of a downsized
@@ -233,7 +252,7 @@ fn histogram_median(v: &[i32]) -> (usize, f32) {
 /// bits, the Cb and Cr values each get 16 bits.
 pub fn histogram(img: &image::RgbaImage) -> (u64, Vec<f32>) {
     let mut bits =  0_u64;
-    let mut histo_max = Vec::new();
+    let mut histo_max = vec![0.0_f32; 64];
     let mut h = vec![0_i32; 64];
 
     for y in 0..img.height() {
