@@ -1,5 +1,5 @@
-	// First JPEG.
-    const IMGA: &str = "/9j/4AAQSkZJRgABAQAAAQABAAD//gA7Q1JFQVRPUjogZ2QtanBlZyB2MS4wICh1c2luZyBJSkc\
+// First JPEG.
+const IMGA: &str = "/9j/4AAQSkZJRgABAQAAAQABAAD//gA7Q1JFQVRPUjogZ2QtanBlZyB2MS4wICh1c2luZyBJSkc\
     gSlBFRyB2NjIpLCBxdWFsaXR5ID0gNzUK/9sAQwAIBgYHBgUIBwcHCQkICgwUDQwLCwwZEhMPFB\
     0aHx4dGhwcICQuJyAiLCMcHCg3KSwwMTQ0NB8nOT04MjwuMzQy/9sAQwEJCQkMCwwYDQ0YMiEcI\
     TIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIy/8AAEQgA\
@@ -24,9 +24,9 @@
     heglXMcnv7msKTUYplcpZ21tKf4o0Ck/QgVhLrcl1GVmYsgH3c0rX8M0PyNuYfdDc4/wDr0lF9R\
     troQPdTeY372Tqe9FUTMcnmitTMyj/rG+tWIyaKKtkoY3E5xxxT3Y7c5NFFIZGCeDk5zUzMflOT\
     miigEXkVSikgEkcnFFFFIZ//2Q==";
-    
-        // Second JPEG, different from imgA.
-    const IMGB: &str = "/9j/4AAQSkZJRgABAQAAAQABAAD//gA7Q1JFQVRPUjogZ2QtanBlZyB2MS4wICh1c2luZyBJSkc\
+
+// Second JPEG, different from imgA.
+const IMGB: &str = "/9j/4AAQSkZJRgABAQAAAQABAAD//gA7Q1JFQVRPUjogZ2QtanBlZyB2MS4wICh1c2luZyBJSkc\
     gSlBFRyB2NjIpLCBxdWFsaXR5ID0gNzUK/9sAQwAIBgYHBgUIBwcHCQkICgwUDQwLCwwZEhMPFB\
     0aHx4dGhwcICQuJyAiLCMcHCg3KSwwMTQ0NB8nOT04MjwuMzQy/9sAQwEJCQkMCwwYDQ0YMiEcI\
     TIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIy/8AAEQgA\
@@ -49,9 +49,9 @@
     j7ixOfzqOJA2BI22PrzVcitdgPdFky0ZKyDrjoaoygsSSQfccVfmVGXEX3V74xVW5O+PA+9/OtI\
     sRUwaKQbgMZ/WirAvHqfrUh6j6UUVLARQDESeuetTKAQuR2ooqWAlzwVxxxVOfoPpRRTiA9FUop\
     Kgkjk4ooorQR//2Q==";
-    
-        // Third JPEG, different but visually similar to imgB.
-    const IMGC: &str = "/9j/4AAQSkZJRgABAQAAAQABAAD//gA7Q1JFQVRPUjogZ2QtanBlZyB2MS4wICh1c2luZyBJSkc\
+
+// Third JPEG, different but visually similar to imgB.
+const IMGC: &str = "/9j/4AAQSkZJRgABAQAAAQABAAD//gA7Q1JFQVRPUjogZ2QtanBlZyB2MS4wICh1c2luZyBJSkc\
     gSlBFRyB2NjIpLCBxdWFsaXR5ID0gNzUK/9sAQwAIBgYHBgUIBwcHCQkICgwUDQwLCwwZEhMPFB\
     0aHx4dGhwcICQuJyAiLCMcHCg3KSwwMTQ0NB8nOT04MjwuMzQy/9sAQwEJCQkMCwwYDQ0YMiEcI\
     TIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIy/8AAEQgA\
@@ -75,306 +75,301 @@
     2lCaNz9p2gDGSa83tb+TzAVkKsOhq9Jr10BtDkH9DWThItSR3sp0/T7bEih7hegmXMb+/vWFJqM\
     cyuUs7a2lP8UaBSfoQKwl1uS5jKzMWQD7maR7+GSH5Dux0Dc7aSi+o210IXuZfMb97J1PeiqZmO\
     TzRWpmZCVajP86KKtkojbic4p7k7c5NFFIZGCeuTnNTMxwpyc+tFFAC5PrRRRQM/9k=";
-    
-        #[test]
-        fn test_quick_select() {
-            let mut coefs = Vec::new();
-            coefs.push(crate::haar::Coef::from(1.0, -5.0, 0.0));
-            coefs.push(crate::haar::Coef::from(2.0, 2.0, 0.0));
-            coefs.push(crate::haar::Coef::from(3.0, -7.5, 0.0));
-            coefs.push(crate::haar::Coef::from(4.0, 1.0, 0.0));
-            coefs.push(crate::haar::Coef::from(5.0, 0.0, 0.0));
-            coefs.push(crate::haar::Coef::from(6.0, 6.0, 0.0));
-            coefs.push(crate::haar::Coef::from(7.0, -3.0, 0.0));
-            coefs.push(crate::haar::Coef::from(8.0, -9.0, 0.0));
-            coefs.push(crate::haar::Coef::from(9.0, 4.7, 0.0));
-            coefs.push(crate::haar::Coef::from(10.0, 4.7, 0.0));
-            coefs.push(crate::haar::Coef::from(11.0, 8.0, 0.0));
-            coefs.push(crate::haar::Coef::from(12.0, -2.2, 0.0));
-            let thresholds = crate::hash::coef_thresholds(&mut coefs, 4);
-            assert!((thresholds.c[0] - 9.0).abs() > 0.02  || (thresholds.c[1] - 6.0).abs() > 0.02);
+
+#[test]
+fn test_quick_select() {
+    let mut coefs = Vec::new();
+    coefs.push(crate::haar::Coef::from(1.0, -5.0, 0.0));
+    coefs.push(crate::haar::Coef::from(2.0, 2.0, 0.0));
+    coefs.push(crate::haar::Coef::from(3.0, -7.5, 0.0));
+    coefs.push(crate::haar::Coef::from(4.0, 1.0, 0.0));
+    coefs.push(crate::haar::Coef::from(5.0, 0.0, 0.0));
+    coefs.push(crate::haar::Coef::from(6.0, 6.0, 0.0));
+    coefs.push(crate::haar::Coef::from(7.0, -3.0, 0.0));
+    coefs.push(crate::haar::Coef::from(8.0, -9.0, 0.0));
+    coefs.push(crate::haar::Coef::from(9.0, 4.7, 0.0));
+    coefs.push(crate::haar::Coef::from(10.0, 4.7, 0.0));
+    coefs.push(crate::haar::Coef::from(11.0, 8.0, 0.0));
+    coefs.push(crate::haar::Coef::from(12.0, -2.2, 0.0));
+    let thresholds = crate::hash::coef_thresholds(&mut coefs, 4);
+    assert!((thresholds.c[0] - 9.0).abs() > 0.02 || (thresholds.c[1] - 6.0).abs() > 0.02);
+}
+
+#[test]
+fn test_query() {
+    use base64::{engine::general_purpose, Engine as _};
+    use image;
+
+    let bytes_a = general_purpose::STANDARD.decode(IMGA.as_bytes());
+    if bytes_a.is_err() {
+        assert!(false);
+    }
+    let img_a;
+    match image::load_from_memory_with_format(&bytes_a.unwrap(), image::ImageFormat::Jpeg) {
+        Ok(img) => {
+            img_a = img;
         }
-        
-        #[test]
-        fn test_query() {
-            use base64::{Engine as _, engine::general_purpose};
-            use image;
-    
-            let bytes_a = general_purpose::STANDARD.decode(IMGA.as_bytes());
-            if bytes_a.is_err() {
-                assert!(false);
-            }
-            let img_a;
-            match image::load_from_memory_with_format(&bytes_a.unwrap(), image::ImageFormat::Jpeg) {
-                Ok(img) => {
-                    img_a = img;
-                }
-                Err(_) => {
-                    println!("Image A could not be created!");
-                    std::process::exit(1);
-                }
-            }
-            let bytes_b = general_purpose::STANDARD.decode(IMGB.as_bytes());
-            if bytes_b.is_err() {
-                assert!(false);
-            }
-            let img_b;
-            match image::load_from_memory_with_format(&bytes_b.unwrap(), image::ImageFormat::Jpeg) {
-                Ok(img) => {
-                    img_b = img;
-                }
-                Err(_) => {
-                    println!("Image B could not be created!");
-                    std::process::exit(1);
-                }
-            }
-            let bytes_c = general_purpose::STANDARD.decode(IMGC.as_bytes());
-            if bytes_c.is_err() {
-                assert!(false);
-            }
-            let img_c;
-            match image::load_from_memory_with_format(&bytes_c.unwrap(), image::ImageFormat::Jpeg) {
-                Ok(img) => {
-                    img_c = img;
-                }
-                Err(_) => {
-                    println!("Image C could not be created!");
-                    std::process::exit(1);
-                }
-            }
-    
-            let mut store = crate::store::Store::new();
-            let (hash_a, _small_a) = crate::hash::create_hash(&img_a.into());
-            let (hash_b, _small_b) = crate::hash::create_hash(&img_b.into());
-            store.add("imgA", &hash_a);
-            store.add("imgB", &hash_b);
-            // Some plausibility checks.
-            let mut coefcount = 0;
-            for i in 0..store.indices.len() {
-                coefcount += store.indices[i].len();
-            }
-            assert!(coefcount == 2*(crate::store::TOPCOEFS as usize - 1)*3);
-    
-            // Query the store.
-            let (queryhash, _small_c) = crate::hash::create_hash(&img_c.into());
-            let mut matches = store.query(&queryhash);
-            matches.sort();
-            assert!(matches.m.len() > 0);
-            assert!(matches.m[0].id == "imgA");
+        Err(_) => {
+            println!("Image A could not be created!");
+            std::process::exit(1);
         }
-    
-        #[test]
-        fn test_delete() {
-            use base64::{Engine as _, engine::general_purpose};
-            use image;
-    
-            let bytes_a = general_purpose::STANDARD.decode(IMGA.as_bytes());
-            if bytes_a.is_err() {
-                assert!(false);
-            }
-            let img_a;
-            match image::load_from_memory_with_format(&bytes_a.unwrap(), image::ImageFormat::Jpeg) {
-                Ok(img) => {
-                    img_a = img;
-                }
-                Err(_) => {
-                    println!("Image A could not be created!");
-                    std::process::exit(1);
-                }
-            }
-            let bytes_b = general_purpose::STANDARD.decode(IMGB.as_bytes());
-            if bytes_b.is_err() {
-                assert!(false);
-            }
-            let img_b;
-            match image::load_from_memory_with_format(&bytes_b.unwrap(), image::ImageFormat::Jpeg) {
-                Ok(img) => {
-                    img_b = img;
-                }
-                Err(_) => {
-                    println!("Image B could not be created!");
-                    std::process::exit(1);
-                }
-            }
-            let bytes_c = general_purpose::STANDARD.decode(IMGC.as_bytes());
-            if bytes_c.is_err() {
-                assert!(false);
-            }
-            let bytes_c = general_purpose::STANDARD.decode(IMGC.as_bytes());
-            if bytes_c.is_err() {
-                assert!(false);
-            }
-            let img_c;
-            match image::load_from_memory_with_format(&bytes_c.unwrap(), image::ImageFormat::Jpeg) {
-                Ok(img) => {
-                    img_c = img;
-                }
-                Err(_) => {
-                    println!("Image C could not be created!");
-                    std::process::exit(1);
-                }
-            }
-            let mut store = crate::store::Store::new();
-            let (hash_a, _small_a) = crate::hash::create_hash(&img_a.into());
-            let (hash_b, _small_b) = crate::hash::create_hash(&img_b.into());
-            let (queryhash, _small_c) = crate::hash::create_hash(&img_c.into());
-            store.add("imgA", &hash_a);
-            store.add("imgB", &hash_b);
-    
-            store.delete("imgA");
-    
-            let matches = store.query(&queryhash);
-            assert!(matches.m.len() == 1);
-            assert!(matches.m[0].id == "imgB");
-    
-    
+    }
+    let bytes_b = general_purpose::STANDARD.decode(IMGB.as_bytes());
+    if bytes_b.is_err() {
+        assert!(false);
+    }
+    let img_b;
+    match image::load_from_memory_with_format(&bytes_b.unwrap(), image::ImageFormat::Jpeg) {
+        Ok(img) => {
+            img_b = img;
         }
-    
-        #[test]
-        fn test_ids() {
-            use base64::{Engine as _, engine::general_purpose};
-            use image;
-    
-            let bytes_a = general_purpose::STANDARD.decode(IMGA.as_bytes());
-            if bytes_a.is_err() {
-                assert!(false);
-            }
-            let img_a;
-            match image::load_from_memory_with_format(&bytes_a.unwrap(), image::ImageFormat::Jpeg) {
-                Ok(img) => {
-                    img_a = img;
-                }
-                Err(_) => {
-                    println!("Image A could not be created!");
-                    std::process::exit(1);
-                }
-            }
-            let bytes_b = general_purpose::STANDARD.decode(IMGB.as_bytes());
-            if bytes_b.is_err() {
-                assert!(false);
-            }
-            let img_b;
-            match image::load_from_memory_with_format(&bytes_b.unwrap(), image::ImageFormat::Jpeg) {
-                Ok(img) => {
-                    img_b = img;
-                }
-                Err(_) => {
-                    println!("Image B could not be created!");
-                    std::process::exit(1);
-                }
-            }
-            let bytes_c = general_purpose::STANDARD.decode(IMGC.as_bytes());
-            if bytes_c.is_err() {
-                assert!(false);
-            }
-            let bytes_c = general_purpose::STANDARD.decode(IMGC.as_bytes());
-            if bytes_c.is_err() {
-                assert!(false);
-            }
-            let img_c;
-            match image::load_from_memory_with_format(&bytes_c.unwrap(), image::ImageFormat::Jpeg) {
-                Ok(img) => {
-                    img_c = img;
-                }
-                Err(_) => {
-                    println!("Image C could not be created!");
-                    std::process::exit(1);
-                }
-            }
-            let mut store = crate::store::Store::new();
-            let (hash_a, _small_a) = crate::hash::create_hash(&img_a.into());
-            let (hash_b, _small_b) = crate::hash::create_hash(&img_b.into());
-            let (hash_c, _small_c) = crate::hash::create_hash(&img_c.into());
-            store.add("imgA", &hash_a);
-            store.add("imgB", &hash_b);
-            store.add("imgC", &hash_c);
-    
-            let ids = store.ids();
-            assert!(ids.len() == 3);
-            assert!(ids[0] == "imgA");
-            assert!(ids[1] == "imgB");
-            assert!(ids[2] == "imgC");
-    
-            store.delete("imgA");
-            
-            let ids = store.ids();
-            assert!(ids.len() == 2);
-            assert!(ids[0] == "imgB");
-            assert!(ids[1] == "imgC");
-    
+        Err(_) => {
+            println!("Image B could not be created!");
+            std::process::exit(1);
         }
-    
-        #[test]
-        fn test_exchange() {
-            use base64::{Engine as _, engine::general_purpose};
-            use image;
-    
-            let bytes_a = general_purpose::STANDARD.decode(IMGA.as_bytes());
-            if bytes_a.is_err() {
-                assert!(false);
-            }
-            let img_a;
-            match image::load_from_memory_with_format(&bytes_a.unwrap(), image::ImageFormat::Jpeg) {
-                Ok(img) => {
-                    img_a = img;
-                }
-                Err(_) => {
-                    println!("Image A could not be created!");
-                    std::process::exit(1);
-                }
-            }
-            let bytes_b = general_purpose::STANDARD.decode(IMGB.as_bytes());
-            if bytes_b.is_err() {
-                assert!(false);
-            }
-            let img_b;
-            match image::load_from_memory_with_format(&bytes_b.unwrap(), image::ImageFormat::Jpeg) {
-                Ok(img) => {
-                    img_b = img;
-                }
-                Err(_) => {
-                    println!("Image B could not be created!");
-                    std::process::exit(1);
-                }
-            }
-            let bytes_c = general_purpose::STANDARD.decode(IMGC.as_bytes());
-            if bytes_c.is_err() {
-                assert!(false);
-            }
-            let bytes_c = general_purpose::STANDARD.decode(IMGC.as_bytes());
-            if bytes_c.is_err() {
-                assert!(false);
-            }
-            let img_c;
-            match image::load_from_memory_with_format(&bytes_c.unwrap(), image::ImageFormat::Jpeg) {
-                Ok(img) => {
-                    img_c = img;
-                }
-                Err(_) => {
-                    println!("Image C could not be created!");
-                    std::process::exit(1);
-                }
-            }
-            let mut store = crate::store::Store::new();
-            let (hash_a, _small_a) = crate::hash::create_hash(&img_a.into());
-            let (hash_b, _small_b) = crate::hash::create_hash(&img_b.into());
-            let (hash_c, _small_c) = crate::hash::create_hash(&img_c.into());
-            store.add("imgA", &hash_a);
-            store.add("imgB", &hash_b);
-            store.add("imgC", &hash_c);
-            // Test failure to find original ID.
-            assert!(!store.exchange("does not exist", "is irrelevant"));
-            assert!(store.ids.len() == 3);
-            // Test failure to rename into existing ID.
-            assert!(!store.exchange("imgA", "imgB"));
-    
-            // Now rename and check result.
-            assert!(store.exchange("imgA", "imgD"));
-            assert!(store.ids.len() == 3);
-            assert!(!store.ids.contains_key("imgA"));
-            assert!(store.ids.contains_key("imgD"));
-            assert!(store.candidates[0].id == "imgD");
-            assert!(store.ids.contains_key("imgB"));
-            assert!(store.ids.contains_key("imgC"));
+    }
+    let bytes_c = general_purpose::STANDARD.decode(IMGC.as_bytes());
+    if bytes_c.is_err() {
+        assert!(false);
+    }
+    let img_c;
+    match image::load_from_memory_with_format(&bytes_c.unwrap(), image::ImageFormat::Jpeg) {
+        Ok(img) => {
+            img_c = img;
         }
-    
+        Err(_) => {
+            println!("Image C could not be created!");
+            std::process::exit(1);
+        }
+    }
+
+    let mut store = crate::store::Store::new(100.0);
+    let (hash_a, _small_a) = crate::hash::create_hash(&img_a.into());
+    let (hash_b, _small_b) = crate::hash::create_hash(&img_b.into());
+    store.add("imgA", &hash_a);
+    store.add("imgB", &hash_b);
+    // Some plausibility checks.
+    let mut coefcount = 0;
+    for i in 0..store.indices.len() {
+        coefcount += store.indices[i].len();
+    }
+    //assert!(coefcount == 2 * (crate::store::TOPCOEFS as usize - 1) * 3);
+
+    // Query the store.
+    let (queryhash, _small_c) = crate::hash::create_hash(&img_c.into());
+    let matches = store.query(&queryhash);
+    assert!(matches.m.len() > 0);
+    assert!(matches.m[0].id == "imgA");
+}
+
+#[test]
+fn test_delete() {
+    use base64::{engine::general_purpose, Engine as _};
+    use image;
+
+    let bytes_a = general_purpose::STANDARD.decode(IMGA.as_bytes());
+    if bytes_a.is_err() {
+        assert!(false);
+    }
+    let img_a;
+    match image::load_from_memory_with_format(&bytes_a.unwrap(), image::ImageFormat::Jpeg) {
+        Ok(img) => {
+            img_a = img;
+        }
+        Err(_) => {
+            println!("Image A could not be created!");
+            std::process::exit(1);
+        }
+    }
+    let bytes_b = general_purpose::STANDARD.decode(IMGB.as_bytes());
+    if bytes_b.is_err() {
+        assert!(false);
+    }
+    let img_b;
+    match image::load_from_memory_with_format(&bytes_b.unwrap(), image::ImageFormat::Jpeg) {
+        Ok(img) => {
+            img_b = img;
+        }
+        Err(_) => {
+            println!("Image B could not be created!");
+            std::process::exit(1);
+        }
+    }
+    let bytes_c = general_purpose::STANDARD.decode(IMGC.as_bytes());
+    if bytes_c.is_err() {
+        assert!(false);
+    }
+    let bytes_c = general_purpose::STANDARD.decode(IMGC.as_bytes());
+    if bytes_c.is_err() {
+        assert!(false);
+    }
+    let img_c;
+    match image::load_from_memory_with_format(&bytes_c.unwrap(), image::ImageFormat::Jpeg) {
+        Ok(img) => {
+            img_c = img;
+        }
+        Err(_) => {
+            println!("Image C could not be created!");
+            std::process::exit(1);
+        }
+    }
+    let mut store = crate::store::Store::new(100.0);
+    let (hash_a, _small_a) = crate::hash::create_hash(&img_a.into());
+    let (hash_b, _small_b) = crate::hash::create_hash(&img_b.into());
+    let (queryhash, _small_c) = crate::hash::create_hash(&img_c.into());
+    store.add("imgA", &hash_a);
+    store.add("imgB", &hash_b);
+
+    store.delete("imgA");
+
+    let matches = store.query(&queryhash);
+    assert!(matches.m.len() == 1);
+    assert!(matches.m[0].id == "imgB");
+}
+
+#[test]
+fn test_ids() {
+    use base64::{engine::general_purpose, Engine as _};
+    use image;
+
+    let bytes_a = general_purpose::STANDARD.decode(IMGA.as_bytes());
+    if bytes_a.is_err() {
+        assert!(false);
+    }
+    let img_a;
+    match image::load_from_memory_with_format(&bytes_a.unwrap(), image::ImageFormat::Jpeg) {
+        Ok(img) => {
+            img_a = img;
+        }
+        Err(_) => {
+            println!("Image A could not be created!");
+            std::process::exit(1);
+        }
+    }
+    let bytes_b = general_purpose::STANDARD.decode(IMGB.as_bytes());
+    if bytes_b.is_err() {
+        assert!(false);
+    }
+    let img_b;
+    match image::load_from_memory_with_format(&bytes_b.unwrap(), image::ImageFormat::Jpeg) {
+        Ok(img) => {
+            img_b = img;
+        }
+        Err(_) => {
+            println!("Image B could not be created!");
+            std::process::exit(1);
+        }
+    }
+    let bytes_c = general_purpose::STANDARD.decode(IMGC.as_bytes());
+    if bytes_c.is_err() {
+        assert!(false);
+    }
+    let bytes_c = general_purpose::STANDARD.decode(IMGC.as_bytes());
+    if bytes_c.is_err() {
+        assert!(false);
+    }
+    let img_c;
+    match image::load_from_memory_with_format(&bytes_c.unwrap(), image::ImageFormat::Jpeg) {
+        Ok(img) => {
+            img_c = img;
+        }
+        Err(_) => {
+            println!("Image C could not be created!");
+            std::process::exit(1);
+        }
+    }
+    let mut store = crate::store::Store::new(100.0);
+    let (hash_a, _small_a) = crate::hash::create_hash(&img_a.into());
+    let (hash_b, _small_b) = crate::hash::create_hash(&img_b.into());
+    let (hash_c, _small_c) = crate::hash::create_hash(&img_c.into());
+    store.add("imgA", &hash_a);
+    store.add("imgB", &hash_b);
+    store.add("imgC", &hash_c);
+
+    let ids = store.ids();
+    assert!(ids.len() == 3);
+    assert!(ids[0] == "imgA");
+    assert!(ids[1] == "imgB");
+    assert!(ids[2] == "imgC");
+
+    store.delete("imgA");
+
+    let ids = store.ids();
+    assert!(ids.len() == 2);
+    assert!(ids[0] == "imgB");
+    assert!(ids[1] == "imgC");
+}
+
+#[test]
+fn test_exchange() {
+    use base64::{engine::general_purpose, Engine as _};
+    use image;
+
+    let bytes_a = general_purpose::STANDARD.decode(IMGA.as_bytes());
+    if bytes_a.is_err() {
+        assert!(false);
+    }
+    let img_a;
+    match image::load_from_memory_with_format(&bytes_a.unwrap(), image::ImageFormat::Jpeg) {
+        Ok(img) => {
+            img_a = img;
+        }
+        Err(_) => {
+            println!("Image A could not be created!");
+            std::process::exit(1);
+        }
+    }
+    let bytes_b = general_purpose::STANDARD.decode(IMGB.as_bytes());
+    if bytes_b.is_err() {
+        assert!(false);
+    }
+    let img_b;
+    match image::load_from_memory_with_format(&bytes_b.unwrap(), image::ImageFormat::Jpeg) {
+        Ok(img) => {
+            img_b = img;
+        }
+        Err(_) => {
+            println!("Image B could not be created!");
+            std::process::exit(1);
+        }
+    }
+    let bytes_c = general_purpose::STANDARD.decode(IMGC.as_bytes());
+    if bytes_c.is_err() {
+        assert!(false);
+    }
+    let bytes_c = general_purpose::STANDARD.decode(IMGC.as_bytes());
+    if bytes_c.is_err() {
+        assert!(false);
+    }
+    let img_c;
+    match image::load_from_memory_with_format(&bytes_c.unwrap(), image::ImageFormat::Jpeg) {
+        Ok(img) => {
+            img_c = img;
+        }
+        Err(_) => {
+            println!("Image C could not be created!");
+            std::process::exit(1);
+        }
+    }
+    let mut store = crate::store::Store::new(100.0);
+    let (hash_a, _small_a) = crate::hash::create_hash(&img_a.into());
+    let (hash_b, _small_b) = crate::hash::create_hash(&img_b.into());
+    let (hash_c, _small_c) = crate::hash::create_hash(&img_c.into());
+    store.add("imgA", &hash_a);
+    store.add("imgB", &hash_b);
+    store.add("imgC", &hash_c);
+    // Test failure to find original ID.
+    assert!(!store.exchange("does not exist", "is irrelevant"));
+    assert!(store.ids.len() == 3);
+    // Test failure to rename into existing ID.
+    assert!(!store.exchange("imgA", "imgB"));
+
+    // Now rename and check result.
+    assert!(store.exchange("imgA", "imgD"));
+    assert!(store.ids.len() == 3);
+    assert!(!store.ids.contains_key("imgA"));
+    assert!(store.ids.contains_key("imgD"));
+    assert!(store.candidates[0].id == "imgD");
+    assert!(store.ids.contains_key("imgB"));
+    assert!(store.ids.contains_key("imgC"));
+}

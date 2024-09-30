@@ -1,12 +1,15 @@
 //use array2d::{Array2D, Error};
+use std::io::{Read, Write};
+use log;
 
 static WEIGHTS: [[f64;6];3] = [[5.00_f64, 0.83, 1.01, 0.52, 0.47, 0.30], 
                 [19.21, 1.26, 0.44, 0.53, 0.28, 0.14],
                 [34.37, 0.36, 0.45, 0.14, 0.18, 0.27]];
 pub const IMAGESCALE: u32 = 128;
-pub const INDICESMAX: u32 = 49200;
+pub const INDICESMAX: u32 = 98400;
 pub static TOPCOEFS: i32 = 40;
 static WEIGHTSUMS: [f64;6] = [58.58 as f64, 2.45, 1.9, 1.19, 0.93, 0.71];
+pub static CTRL_C_PRESSED: bool = false;
 
 /// Store is a data structure that holds references to images. It holds visual
 /// hashes and references to the images but the images themselves are not held
@@ -16,41 +19,58 @@ static WEIGHTSUMS: [f64;6] = [58.58 as f64, 2.45, 1.9, 1.19, 0.93, 0.71];
 /// images. This is to save RAM space but may be easy to extend by modifying its
 /// data structures to hold uint64 indices instead of uint32 indices.
 ///
+/// candidates contains all images in the store or, rather, the candidates for a query.
+/// 
+/// All IDs in the store, mapping to candidate indices.
+/// 
+/// indices  contains references to the images in the store. It is a slice
+/// of slices which contains image indices (into the "candidates" slice).
+/// Use the following formula to access an index slice:
+///
+///	store.indices[sign*ImageScale*ImageScale*haar.ColourChannels + coefIdx*haar.ColourChannels + channel]
+///
+/// where the variables are as follows:
+///
+///	sign: Either 0 (positive) or 1 (negative)
+///	coefIdx: The index of the coefficient (from 0 to (ImageScale*ImageScale)-1)
+///	channel: The colour channel (from 0 to haar.ColourChannels-1)
+///     
+/// sentivity (Hamming distance threshold) for the perceptual hashes. 
+/// Larger values will allow more images to be seen as *similar*
+/// 
+/// modified tells Whether this store was modified since it was loaded/created.
+///
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub struct Store {
 	//sync.RWMutex,
 
-	// All images in the store or, rather, the candidates for a query.
 	pub candidates: Vec<crate::candidate::Candidate>,
 
-	// All IDs in the store, mapping to candidate indices.
 	pub ids: std::collections::BTreeMap<String, usize>,
 
-	// indices  contains references to the images in the store. It is a slice
-	// of slices which contains image indices (into the "candidates" slice).
-	// Use the following formula to access an index slice:
-	//
-	//		s := store.indices[sign*ImageScale*ImageScale*haar.ColourChannels + coefIdx*haar.ColourChannels + channel]
-	//
-	// where the variables are as follows:
-	//
-	//		* sign: Either 0 (positive) or 1 (negative)
-	//		* coefIdx: The index of the coefficient (from 0 to (ImageScale*ImageScale)-1)
-	//		* channel: The colour channel (from 0 to haar.ColourChannels-1)
 	pub indices: Vec<Vec<u32>>,
 
-	// Whether this store was modified since it was loaded/created.
-	pub modified: bool,
+    sensitivity: f64,
+
+    pub modified: bool,
 }
 
-impl Store {
-    pub fn new() -> Self {
-        let mut v = Store {
+impl Default for Store {
+    fn default() -> Store {
+        Store {
             candidates: Vec::new(),
             ids: std::collections::BTreeMap::new(),
             indices: Vec::new(),
+            sensitivity: -60.0,
             modified: false,
-        };
+       }
+    }
+}
+
+impl Store {
+    pub fn new(sensitivity: f64) -> Self {
+        let mut v = Store {..Default::default()};
+        v.sensitivity = sensitivity;
         for _ in 0..INDICESMAX {
             // prefill the outer Vec so we can directly access the inner Vec
             v.indices.push(Vec::new()); 
@@ -75,17 +95,22 @@ impl Store {
         let index = self.candidates.len();
         self.candidates.push(crate::candidate::Candidate::from(id, hash));
         self.ids.insert(id.to_string(), index);
-        for i in 1..hash.matrix.coefs.len() {
-            if hash.matrix.coefs[i].c[0].abs() > hash.thresholds.c[0] {
-                continue;
-            }
-            for j in 0..hash.matrix.coefs[i].c.len() {
+        if hash.matrix.coefs.len() < 2 {
+            return;
+        }
+        for coefindex in 1..hash.matrix.coefs.len() {
+            let coef = &hash.matrix.coefs[coefindex];
+            for colorindex in 0..coef.c.len() {
+                let colorcoef = coef.c[colorindex];
+                if colorcoef.abs() < hash.thresholds.c[colorindex] {
+                    continue;
+                }
                 let mut sign = 0;
-                if hash.matrix.coefs[i].c[j] < 0.0 {
+                if colorcoef < 0.0 {
                     sign = 1;
                 }
                 let location = sign * IMAGESCALE *IMAGESCALE * crate::haar::COLOURCHANNELS 
-                                    + j as u32 * crate::haar::COLOURCHANNELS + j as u32;
+                                    + coefindex as u32 * crate::haar::COLOURCHANNELS + colorindex as u32;
                 self.indices[location as usize].push(index as u32);
             }
         }
@@ -117,10 +142,9 @@ impl Store {
         self.ids.remove(id);
         // Remove from all index lists.
         for i in 0..self.indices.len() {
-            for j in 0..self.indices[i].len() {
+            for j in (0..self.indices[i].len()).rev() {
                 if self.indices[i][j] == index as u32 {
                     self.indices[i].remove(j);
-                    break;
                 }
             }
         }
@@ -189,14 +213,15 @@ impl Store {
                 // At this point, we have a coefficient which we want to look up
 			    // in the index buckets.
                 let mut sign = 0;
-                if hash.matrix.coefs[coefindex].c[colorindex] < 0.0 {
+                if colorcoef < 0.0 {
                     sign = 1;
                 }
                 let location = sign * IMAGESCALE *IMAGESCALE * crate::haar::COLOURCHANNELS 
-                                    + colorindex as u32 * crate::haar::COLOURCHANNELS + colorindex as u32;
-                for i in 0..self.indices[location as usize].len() {
-                    let sindex = self.indices[location as usize][i];
-                    if !scores[sindex as usize].is_nan() {
+                                    + coefindex as u32 * crate::haar::COLOURCHANNELS + colorindex as u32;
+                let arr = &self.indices[location as usize];
+                for i in 0..arr.len() {
+                    let sindex = arr[i];
+                    if scores[sindex as usize].is_nan() {
                         // calculated initial score
                         let mut score: f64  = 0.0;
                         for colorid in 0..coef.c.len() {
@@ -210,7 +235,7 @@ impl Store {
                 }
             }
         }
-        // Create matches.
+        // Create matches. If the dhash_distance is lower than the sensitivity threshold it is a *valid* match.
         for index in 0..scores.len() {
             if !scores[index].is_nan() {
                 let mut m = crate::matches::Match::new();
@@ -223,10 +248,13 @@ impl Store {
                                         self.candidates[index].dhash[1], hash.dhash[1]);
                 m.histogram_distance = crate::hamming::hamming_distance(
                                             self.candidates[index].histogram, hash.histogram);
-                ms.m.push(m);
-                
+                if m.score < self.sensitivity {
+                    ms.m.push(m);                
+                }
             }
         }
+        // sort the vector so the first match is the one with the lowest value --> the best match
+        // The number of matches should be small, so the bubble sort is about the fastest algorithm.
         ms.sort();
         ms
     }
@@ -239,6 +267,7 @@ impl Store {
         self.modified
     }
 
+    // encode the data structure to binary stream
     pub fn encode(&self, to: &mut Vec<u8>) {
         let s = self.candidates.len();
         crate::marshal::store_usize(s, to);
@@ -248,12 +277,14 @@ impl Store {
         crate::marshal::store_hash_string_usize(&self.ids, to);
         let s = self.indices.len();
         crate::marshal::store_usize(s, to);
+        crate::marshal::store_f64(self.sensitivity, to);
         for elem in &self.indices {
             crate::marshal::store_vec_u32(elem, to);
         }
         crate::marshal::store_bool(self.modified, to);
     }
 
+    // decode data structure from binary stream
     pub fn decode(&mut self, from: &mut std::io::Cursor<Vec<u8>>) {
         let s = crate::marshal::restore_usize(from);
         for _i in 0..s {
@@ -262,6 +293,7 @@ impl Store {
             self.candidates.push(elem);
         }
         self.ids.extend(crate::marshal::restore_hash_string_usize(from));
+        self.sensitivity = crate::marshal::restore_f64(from);
         let s = crate::marshal::restore_usize(from);
         for _i in 0..s {
             let mut elem = Vec::new();
@@ -269,7 +301,49 @@ impl Store {
             self.indices.push(elem);
         }
         self.modified = crate::marshal::restore_bool(from);
+        self.modified = false;
+    }
 
+    // Write binary stream to file
+    pub fn dump_binary(&mut self, storefile: &str) {
+        let mut buffer = Vec::new();
+        self.encode(&mut buffer);
+        let path = std::path::Path::new(&storefile);
+        let display = path.display();
+        // Open a file in write-only mode, returns `io::Result<File>`
+        let mut write_file = match std::fs::File::create(&path) {
+            Err(why) => panic!("couldn't create {}: {}", display, why),
+            Ok(write_file) => write_file,
+        };
+        let ret = write_file.write(&mut buffer);
+        if ret.is_err() {
+            log::error!("failed to write binary data to file {}!", &storefile)
+        }
+        let ret = write_file.flush();
+        if ret.is_err() {
+            log::error!(
+                "failed to empty the write buffer for binary data to file {}!",
+                &storefile
+            )
+        }
+    }
+
+    // read binary stream from file
+    pub fn slurp_binary(&mut self, storefile: &str) {
+        let path = std::path::Path::new(&storefile);
+        let display = path.display();
+        let mut input_file = match std::fs::File::open(&path) {
+            Err(why) => panic!("couldn't open {}: {}", display, why),
+            Ok(read_file) => read_file,
+        };
+        let mut buf = Vec::new();
+        let ret = input_file.read_to_end(&mut buf);
+        if ret.is_err() {
+            log::error!("Failed to read test file back in.");
+            return;
+        }
+        let mut read_file = std::io::Cursor::new(buf);
+        self.decode(&mut read_file);
     }
 
 }

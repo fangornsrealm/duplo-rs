@@ -3,8 +3,8 @@ pub struct Match {
     pub id: String,
     pub score: f64, 
     pub ratio_diff: f64,
-    pub dhash_distance: i32,
-    pub histogram_distance: i32,
+    pub dhash_distance: i64,
+    pub histogram_distance: i64,
 }
 
 impl Match {
@@ -13,7 +13,7 @@ impl Match {
         v
     }
 
-    pub fn from(id: &str, score: f64, ratio_diff: f64, dhash_distance: i32, histogram_distance: i32) -> Self {
+    pub fn from(id: &str, score: f64, ratio_diff: f64, dhash_distance: i64, histogram_distance: i64) -> Self {
         let mut v = Match{..Default::default()};
         v.id = id.to_string();
         v.score += score;
@@ -32,16 +32,16 @@ impl Match {
         crate::marshal::store_string(&self.id, to);
         crate::marshal::store_f64(self.score, to);
         crate::marshal::store_f64(self.ratio_diff, to);
-        crate::marshal::store_i32(self.dhash_distance, to);
-        crate::marshal::store_i32(self.histogram_distance, to);
+        crate::marshal::store_i64(self.dhash_distance, to);
+        crate::marshal::store_i64(self.histogram_distance, to);
     }
 
     pub fn decode(&mut self, from: &mut std::io::Cursor<Vec<u8>>) {
         self.id = crate::marshal::restore_string(from);
         self.score = crate::marshal::restore_f64(from);
         self.ratio_diff = crate::marshal::restore_f64(from);
-        self.dhash_distance = crate::marshal::restore_i32(from);
-        self.histogram_distance = crate::marshal::restore_i32(from);
+        self.dhash_distance = crate::marshal::restore_i64(from);
+        self.histogram_distance = crate::marshal::restore_i64(from);
 
     }
 }
@@ -77,20 +77,20 @@ impl Matches {
 
     pub fn len(&self) -> usize {self.m.len()}
     
-    pub fn swap(&mut self, i: usize, j: usize) {
-        let tmp = self.m[i].clone();
-        self.m[i] = self.m[j].clone();
-        self.m[j] = tmp;
+    pub fn swap(&mut self, pos1: usize, pos2: usize) {
+        let tmp = self.m[pos1].clone();
+        self.m[pos1] = self.m[pos2].clone();
+        self.m[pos2] = tmp;
     }
 
-    pub fn less(&self, i: usize, j: usize) -> bool {
-        if j >= self.m.len() {
+    pub fn less(&self, testpos: usize, comparepos: usize) -> bool {
+        if comparepos >= self.m.len() {
             return false;
         }
-        if i >= self.m.len() {
+        if testpos >= self.m.len() {
             return false;
         }
-        return self.m[i].score < self.m[j].score;
+        return self.m[testpos].score < self.m[comparepos].score;
     }
 
     pub fn sort(&mut self) {

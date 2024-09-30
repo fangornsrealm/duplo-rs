@@ -15,11 +15,16 @@ path = "examples/demo_similar_videos.rs"
 #array2d = "0.3.2"
 base64 = "0.22.1"
 image = "0.25.2"
+hamming_rs = "0.2.22"
 rand = "0.8.5"
 walkdir = "2.5.0"
-deku = { version = "0.18", default-features = false, features = ["alloc"] }
+log = { version = "0.4.22", features = [
+    "max_level_debug",
+    "release_max_level_warn",
+] }
 
 [dev-dependencies]
+ctrlc = "3.4"
 log = { version = "0.4.22", features = [
     "max_level_debug",
     "release_max_level_warn",

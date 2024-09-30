@@ -1,6 +1,5 @@
 
 use image::{self, Pixel};
-use rand::Rng;
 
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub struct Hash {
@@ -111,28 +110,19 @@ pub fn create_hash(img: &image::RgbaImage) -> (Hash, image::RgbaImage) {
 /// value. Only the nth element in each Coef is considered. If you discard all
 /// values v with abs(v) < threshold, you will end up with k values.
 pub fn coef_threshold(coefs: &Vec<crate::haar::Coef>, k: i32, n: usize) -> f64 {
-    // It's the QuickSelect algorithm.
     if coefs.len() == 0 {
         return 0.0;
     }
-    let mut rng = rand::thread_rng();
-    let randomindex = rng.gen_range(0..coefs.len());
-    let pivot = coefs[randomindex].c[n].abs();
-    let mut leftcoefs = Vec::new();
-    let mut rightcoefs = Vec::new();
+    let mut v = Vec::new();
     for i in 0..coefs.len() {
-        if coefs[i].c[n].abs() > pivot {
-            leftcoefs.push(coefs[i].clone());
-        } else if coefs[i].c[n].abs() < pivot {
-            rightcoefs.push(coefs[i].clone());
-        }
+        v.push(coefs[i].c[n]);
     }
-    if k as usize <= leftcoefs.len() {
-        return coef_threshold(&leftcoefs, k, n);
-    } else if k as usize > rightcoefs.len() {
-        return coef_threshold(&rightcoefs, k-(coefs.len() - rightcoefs.len()) as i32, n);
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    if v.len() <= k as usize {
+        return v[0];
     } else {
-        return pivot;
+        let index = v.len() - k as usize - 1;
+        return v[index];
     }
 }
 
@@ -168,8 +158,8 @@ fn ycbcr(color: &image::Rgba<u8>) -> (u8, u8, u8) {
     let b = i32::from(rgb[2]);
     let mut yuv = vec![0; 3];
     yuv[0] = clamp((77 * r + 150 * g + 29 * b + 128) >> 8);
-    yuv[0] = clamp(((-43 * r - 84 * g + 127 * b + 128) >> 8) + 128);
-    yuv[0] = clamp(((127 * r - 106 * g - 21 * b + 128) >> 8) + 128);
+    yuv[1] = clamp(((-43 * r - 84 * g + 127 * b + 128) >> 8) + 128);
+    yuv[2] = clamp(((127 * r - 106 * g - 21 * b + 128) >> 8) + 128);
 
     (yuv[0], yuv[1], yuv[2])
 }
@@ -199,11 +189,11 @@ pub fn dhash(img: &image::RgbaImage) -> Vec<u64> {
                 }
                 if y & 1 == 0 {
                     let (_, cbbr, crbr) = ycbcr(scaled.get_pixel(x, y + 1));
-                    if (cbbr + cbtr)>>1 & 0x80 > 0 {
+                    if (cbbr as u32 + cbtr as u32)>>1 & 0x80 > 0 {
                         bits[1] |= 1 << cbpos;
                         cbpos += 1;
                     }
-                    if (crbr + crtr)>>1 & 0x80 > 0 {
+                    if (crbr as u32 + crtr as u32)>>1 & 0x80 > 0 {
                         bits[1] |= 1 << crpos;
                         crpos += 1;
                     }
@@ -218,11 +208,11 @@ pub fn dhash(img: &image::RgbaImage) -> Vec<u64> {
                 if y & 1 == 0 {
                     let (_, cbbr, crbr) = ycbcr(scaled.get_pixel(x, y + 1));
                     let (_, cbbl, crbl) = ycbcr(scaled.get_pixel(x-1, y + 1));
-                    if (cbbr + cbtr)>>1 > (cbbl + cbtl)>>1 {
+                    if (cbbr as u32 + cbtr as u32)>>1 > (cbbl  as u32 + cbtl as u32 )>>1 {
                         bits[1] |= 1 << cbpos;
                         cbpos += 1;
                     }
-                    if (crbr + crtr)>>1 > (crbl + crtl)>>1 {
+                    if (crbr as u32 + crtr as u32)>>1 > (crbl as u32 + crtl as u32)>>1 {
                         bits[1] |= 1 << crpos;
                         crpos += 1;
                     }
@@ -281,14 +271,16 @@ pub fn histogram(img: &image::RgbaImage) -> (u64, Vec<f32>) {
         if index < 32 {
             if value as usize > my {
                 bits |= 1 << index
-            } else if index < 48 {
-                if value as usize > mcb {
-                    bits |= 1 << index-32;
-                }
-            } else {
-                if value as usize > mcr {
-                    bits |= 1 << index-32;
-                }
+            }
+        } else if index < 48 {
+            if value as usize > mcb {
+                //bits |= 1 << index-32;
+                bits |= 1 << index;
+            }
+        } else {
+            if value as usize > mcr {
+                //bits |= 1 << index-32;
+                bits |= 1 << index;
             }
         }
     }
