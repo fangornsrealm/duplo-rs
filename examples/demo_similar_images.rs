@@ -1,4 +1,5 @@
 use clap::{command, Arg, ArgAction};
+use ctrlc;
 use log::LevelFilter;
 use pbr::ProgressBar;
 use simplelog::{ColorChoice, CombinedLogger, Config, TermLogger, TerminalMode, WriteLogger};
@@ -20,9 +21,15 @@ use std::fs::File;
 /// If images were picked that you would like to keep, you have to move at least the files with "REMOVE" in the name somewhere else.
 /// 
 pub fn main() {
+    //ctrlc::set_handler(move || {
+    //    crate::store::CTRL_C_PRESSED = true;
+    //})
+    //.expect("Error setting Ctrl-C handler");
+
+
     let mut logfile = "demo_similar_videos.txt".to_string();
     let mut recursive = false;
-    let mut sensitivity: i32 = -60;
+    let mut sensitivity: f64 = -60.0;
     let curdir = std::env::current_dir().unwrap().as_os_str().to_owned();
     let mut directory = duplo_rs::files::osstring_to_string(&curdir);
     let matches = command!() // requires `cargo` feature
@@ -44,9 +51,9 @@ pub fn main() {
         directory = ret.clone();
     }
     if let Some(ret) = matches.get_one::<String>("sensitivity") {
-        let ret = i32::from_str_radix(ret, 10);
+        let ret = i64::from_str_radix(ret, 10);
         if ret.is_ok() {
-            sensitivity -= ret.unwrap();
+            sensitivity -= ret.unwrap() as f64;
         }
     }
     if let Some(ret) = matches.get_one::<bool>("recursive") {
@@ -74,14 +81,7 @@ pub fn main() {
         std::process::exit(1);
     }
     // create the directory where the user can compare the similar image pairs
-    let dst = p.join("duplicates");
-    if !dst.is_dir() {
-        let ret = std::fs::create_dir(dst);
-        if ret.is_err() {
-            log::error!("Unable to create the duplicates directory in {}!", dir);
-            std::process::exit(2);
-        }
-    }
+    let dst: std::path::PathBuf = p.join("duplicates");
 
     // get the list of files to process
     let filelist;
@@ -92,7 +92,7 @@ pub fn main() {
         filelist = duplo_rs::files::walk_dir_images(&directory);
     }
     let mut progressbar = ProgressBar::new(filelist.len() as u64);
-    let mut store = duplo_rs::store::Store::new();
+    let mut store = duplo_rs::store::Store::new(sensitivity);
 
     // process the files
     for file in filelist.iter() {
@@ -100,12 +100,29 @@ pub fn main() {
         progressbar.inc();
         let filepath = duplo_rs::files::osstring_to_string(file.as_os_str());
         for i in 0..matches.m.len() {
-            log::warn!("Match {} has a Hamming distance of {} to {}.", matches.m[i].id, matches.m[i].dhash_distance, filepath);
-            if matches.m[i].dhash_distance > sensitivity {
+            log::warn!("Match {} is similar to {}.", matches.m[i].id, filepath);
+            let retmatch = imagesize::size(matches.m[i].id.clone());
+            let retsource = imagesize::size(filepath.clone());
+            if retmatch.is_err() {
+                log::error!("Failed to read the size of the image {}!", matches.m[i].id);
+                continue;
+            }
+            if retsource.is_err() {
+                log::error!("Failed to read the size of the image {}!", filepath);
+                continue;
+            }
+            let matchsize = retmatch.unwrap();
+            let sourcesize = retsource.unwrap();
+            if matchsize.width * matchsize.height > sourcesize.width * sourcesize.height {
+                // match is the *better* image, drop the new hash
+                duplo_rs::files::present_images(&dst, &filepath, &matches.m[i].id);
+            } else {
+                // source is the *better* image, remove match from store, add the source and drop the rest of the matches
+                duplo_rs::files::present_images(&dst, &matches.m[i].id, &filepath);
+                store.delete(&matches.m[i].id);
+                store.add(&filepath, &hash);
                 break;
             }
-            
-
         }
         // add the current file to the store
         store.add(&filepath, &hash);
