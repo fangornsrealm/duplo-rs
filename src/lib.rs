@@ -25,6 +25,9 @@ mod hash;
 mod marshal;
 mod matches;
 pub mod store;
+mod videocandidate;
+mod videomatches;
+pub mod videostore;
 
 
 /// processes all the images in the list.

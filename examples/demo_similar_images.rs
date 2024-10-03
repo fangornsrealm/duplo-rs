@@ -27,7 +27,7 @@ pub fn main() {
     //.expect("Error setting Ctrl-C handler");
 
 
-    let mut logfile = "demo_similar_videos.txt".to_string();
+    let mut logfile = "demo_similar_images.txt".to_string();
     let mut recursive = false;
     let mut sensitivity: f64 = -60.0;
     let curdir = std::env::current_dir().unwrap().as_os_str().to_owned();
@@ -96,9 +96,11 @@ pub fn main() {
 
     // process the files
     for file in filelist.iter() {
-        let (matches, hash) = duplo_rs::files::process_image(file, &store);
-        progressbar.inc();
+        let hash = duplo_rs::files::process_image(file);
         let filepath = duplo_rs::files::osstring_to_string(file.as_os_str());
+        let (matches, failedid, failedhash) = 
+            duplo_rs::files::find_similar_images(&store, &filepath, &hash);
+        progressbar.inc();
         for i in 0..matches.m.len() {
             log::warn!("Match {} is similar to {}.", matches.m[i].id, filepath);
             let retmatch = imagesize::size(matches.m[i].id.clone());
@@ -115,16 +117,18 @@ pub fn main() {
             let sourcesize = retsource.unwrap();
             if matchsize.width * matchsize.height > sourcesize.width * sourcesize.height {
                 // match is the *better* image, drop the new hash
-                duplo_rs::files::present_images(&dst, &filepath, &matches.m[i].id);
+                duplo_rs::files::present_pairs(&dst, &filepath, &matches.m[i].id);
             } else {
                 // source is the *better* image, remove match from store, add the source and drop the rest of the matches
-                duplo_rs::files::present_images(&dst, &matches.m[i].id, &filepath);
+                duplo_rs::files::present_pairs(&dst, &matches.m[i].id, &filepath);
                 store.delete(&matches.m[i].id);
                 store.add(&filepath, &hash);
                 break;
             }
         }
         // add the current file to the store
-        store.add(&filepath, &hash);
+        if matches.m.len() == 0 {
+            store.add(&failedid, &failedhash);
+        }
     }
 }

@@ -18,6 +18,7 @@ image = "0.25.2"
 imagesize = "0.13"
 hamming_rs = "0.2.22"
 rand = "0.8.5"
+video-rs = { version = "0.9", features = ["ndarray"] }
 walkdir = "2.5.0"
 log = { version = "0.4.22", features = [
     "max_level_debug",
@@ -31,5 +32,5 @@ log = { version = "0.4.22", features = [
     "release_max_level_warn",
 ] }
 simplelog = { version = "0.12.2", features = ["paris"] }
-clap = { version = "4.5.18", features = ["derive", "cargo"] }
+clap = { version = "4.5.19", features = ["derive", "cargo"] }
 pbr = "1.1.1"
