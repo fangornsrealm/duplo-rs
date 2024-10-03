@@ -172,10 +172,9 @@ impl Store {
         true
     }
 
-    // Query performs a similarity search on the given image hash and returns
-    // all potential matches. The returned slice will not be sorted but implements
-    // sort.Interface, which will sort it so the match with the best score is its
-    // first element.
+    /// Query performs a similarity search on the given image hashes and returns
+    /// all potential matches. The returned slice will sort it so the match with the best score is its
+    /// first element.
     pub fn query(&self, hash: &crate::hash::Hash) -> crate::matches::Matches {
         let mut ms = crate::matches::Matches::new();
         if self.candidates.len() == 0 {
@@ -267,7 +266,7 @@ impl Store {
         self.modified
     }
 
-    // encode the data structure to binary stream
+    /// encode the data structure to binary stream
     pub fn encode(&self, to: &mut Vec<u8>) {
         let s = self.candidates.len();
         crate::marshal::store_usize(s, to);
@@ -284,7 +283,7 @@ impl Store {
         crate::marshal::store_bool(self.modified, to);
     }
 
-    // decode data structure from binary stream
+    /// decode data structure from binary stream
     pub fn decode(&mut self, from: &mut std::io::Cursor<Vec<u8>>) {
         let s = crate::marshal::restore_usize(from);
         for _i in 0..s {
@@ -304,7 +303,7 @@ impl Store {
         self.modified = false;
     }
 
-    // Write binary stream to file
+    /// Write binary stream to file
     pub fn dump_binary(&mut self, storefile: &str) {
         let mut buffer = Vec::new();
         self.encode(&mut buffer);
@@ -328,7 +327,7 @@ impl Store {
         }
     }
 
-    // read binary stream from file
+    /// read binary stream from file
     pub fn slurp_binary(&mut self, storefile: &str) {
         let path = std::path::Path::new(&storefile);
         let display = path.display();
