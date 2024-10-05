@@ -82,6 +82,12 @@ pub fn main() {
     }
     // create the directory where the user can compare the similar image pairs
     let dst: std::path::PathBuf = p.join("duplicates");
+    let storepath = p.join("demo_example_images.store");
+    let mut store: duplo_rs::store::Store = duplo_rs::store::Store::new(sensitivity);;
+    if storepath.is_file() {
+        let storefile = duplo_rs::files::osstring_to_string(storepath.as_os_str());
+        store.slurp_binary(&storefile);
+    }
 
     // get the list of files to process
     let filelist;
@@ -92,7 +98,6 @@ pub fn main() {
         filelist = duplo_rs::files::walk_dir_images(&directory);
     }
     let mut progressbar = ProgressBar::new(filelist.len() as u64);
-    let mut store = duplo_rs::store::Store::new(sensitivity);
 
     // process the files
     for file in filelist.iter() {
@@ -131,4 +136,11 @@ pub fn main() {
             store.add(&failedid, &failedhash);
         }
     }
+    if storepath.is_file() {
+        let ret = std::fs::remove_file(storepath);
+        if ret.is_err() {
+            log::error!("Failed to delete store file");
+        }
+    }
+    store.dump_binary("demo_example_images.store");
 }

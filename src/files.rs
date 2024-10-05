@@ -342,12 +342,12 @@ fn timecode_to_ffmpeg_time(timecode: u32) -> String {
 /// creates a hash for each screenshot 
 /// and compares it with the hashes of screenshots of existing videos.
 /// Delivers existing Matches and the new data structure back to the calling program.
-pub fn process_video(path: &PathBuf, store: &crate::videostore::VideoStore, num_videos: u32) 
+pub fn process_video(path: &PathBuf, video_id: usize, num_videos: u32) 
 -> crate::videocandidate::VideoCandidate 
 {
     let id = osstring_to_string(path.as_os_str());
     let mut video = crate::videocandidate::VideoCandidate::from(
-                &id, store.candidates.len());
+                &id, video_id);
 
     match create_screenshots(&id, video.index, num_videos) {
         Ok((v, meta)) => {

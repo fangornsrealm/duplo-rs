@@ -439,10 +439,12 @@ impl VideoStore {
                     if let Some(x) = sequences.get_mut(&video_id) {
                         if x[x.len()-1] + 1 == screenshot_id {
                             x.push(screenshot_id);
+                            break;
                         } else {
                             // broken sequence
                             x.clear();
                             x.push(screenshot_id);
+                            break;
                         }
                     }
                 }
@@ -450,7 +452,7 @@ impl VideoStore {
             // remove the videos from the sequence that were not a match
             let dropped_videos = previous_videos.difference(&new_videos);
             for id in dropped_videos {
-                // check if the sequence was longer than a minute
+                // check if the sequence was longer than a minute amd add the ones long enough
                 if sequences[id].len() > 5 {
                     let videomatch = self.rate_match(&matches, &video, *id, sequences[id].len());
                     if videomatch.id.len() != 0 {
@@ -462,6 +464,25 @@ impl VideoStore {
             new_videos.clear();
             
         }
+        // done parsing, add everything with more than 5 matches in a row to the list
+        for (id, v) in sequences {
+            // check if the sequence was longer than a minute
+            if v.len() > 5 {
+                let mut m = crate::videomatches::VideoMatch::new();
+                let matchedvideo = &self.candidates[id as usize];
+                m.id = matchedvideo.id.clone();
+                m.video_id = matchedvideo.index;
+                m.screenshot_id = 0;
+                m.timecode = 0;
+                m.score = -60.0                                                                            // base value
+                            - 100.0 * (v.len() as f64 * 10.0) / matchedvideo.runtime as f64                 // the longer the similar part, the better the match
+                            + ((video.width - matchedvideo.width) * (video.width - matchedvideo.width)) as f64; // if the resolution is higher the match gets better
+                if m.id.len() != 0 {
+                    ms.m.push(m);
+                }
+            }
+        }
+        ms.sort();
         ms
     }
 

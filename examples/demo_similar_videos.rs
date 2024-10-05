@@ -3,6 +3,8 @@ use log::LevelFilter;
 use pbr::ProgressBar;
 use simplelog::{ColorChoice, CombinedLogger, Config, TermLogger, TerminalMode, WriteLogger};
 use std::fs::File;
+//use std::sync::mpsc::{Sender, Receiver};
+//use std::sync::mpsc;
 
 /// Searches for similar videos inside a directory or optionally also all it's subdirectories
 /// 
@@ -75,7 +77,7 @@ pub fn main() {
         ),
     ])
     .unwrap();
-    //let directory = "/intern/asorted/pornhub/girls/amai_liu".to_string();
+    let directory = "/ssd/src/rust/duplo-rs/testtfiles".to_string();
     let dir = directory.clone();
     let p = std::path::Path::new(&dir);
     if !p.is_dir() {
@@ -84,6 +86,12 @@ pub fn main() {
     }
     // create the directory where the user can compare the similar image pairs
     let dst: std::path::PathBuf = p.join("duplicates");
+    let storepath = p.join("demo_example_videos.store");
+    let mut store: duplo_rs::videostore::VideoStore = duplo_rs::videostore::VideoStore::new(sensitivity);;
+    if storepath.is_file() {
+        let storefile = duplo_rs::files::osstring_to_string(storepath.as_os_str());
+        store.slurp_binary(&storefile);
+    }
     // get the list of files to process
     let filelist;
     if recursive {
@@ -96,34 +104,44 @@ pub fn main() {
     let mut store = duplo_rs::videostore::VideoStore::new(sensitivity);
 
     // process the files
+    //let (tx, rx): (Sender<duplo_rs::videocandidate::VideoCandidate>, Receiver<duplo_rs::videocandidate::VideoCandidate>) = mpsc::channel();
+    let num_videos = filelist.len() as u32;
     for file in filelist.iter() {
-        let video = duplo_rs::files::process_video(file, &store, filelist.len() as u32);
+        let video_id = store.candidates.len();
+    //use rayon::prelude::*;
+    //filelist.iter().enumerate().for_each(|(video_id, file)| {
+    //    let thread_tx = tx.clone();
         let filepath = duplo_rs::files::osstring_to_string(file.as_os_str());
+        if store.ids.contains_key(&filepath) {
+            continue;
+            //thread_tx.send(duplo_rs::videocandidate::VideoCandidate::new()).unwrap() ; // already parsed
+        }
+        let video = duplo_rs::files::process_video(file, video_id, num_videos);
+        //thread_tx.send(video).unwrap();
+    //});
+    
+    //let mut num_processed = 0;
+    //loop {
+    //    let video_opt = rx.recv();
+    //    if video_opt.is_err() {
+    //        continue;
+    //    }
+    //    let video = video_opt.unwrap();
         let (matches, failedid, _failedhash) = 
-            duplo_rs::files::find_similar_videos(&store, &filepath, &video);
+            duplo_rs::files::find_similar_videos(&store, &video.id, &video);
         progressbar.inc();
         for i in 0..matches.m.len() {
-            log::warn!("Match {} is similar to {}.", matches.m[i].id, filepath);
-            let retmatch = imagesize::size(matches.m[i].id.clone());
-            let retsource = imagesize::size(filepath.clone());
-            if retmatch.is_err() {
-                log::error!("Failed to read the size of the image {}!", matches.m[i].id);
-                continue;
-            }
-            if retsource.is_err() {
-                log::error!("Failed to read the size of the image {}!", filepath);
-                continue;
-            }
-            let matchsize = retmatch.unwrap();
-            let sourcesize = retsource.unwrap();
-            if matchsize.width * matchsize.height > sourcesize.width * sourcesize.height {
+            log::warn!("Match {} is similar to {}.", matches.m[i].id, video.id);
+            let index = store.ids[&matches.m[i].id];
+            let matched = &store.candidates[index];
+            if matched.width * matched.height > video.width * video.height {
                 // match is the *better* image, drop the new hash
-                duplo_rs::files::present_pairs(&dst, &filepath, &matches.m[i].id);
+                duplo_rs::files::present_pairs(&dst, &video.id, &matches.m[i].id);
             } else {
                 // source is the *better* image, remove match from store, add the source and drop the rest of the matches
-                duplo_rs::files::present_pairs(&dst, &matches.m[i].id, &filepath);
+                duplo_rs::files::present_pairs(&dst, &matches.m[i].id, &video.id);
                 store.delete(&matches.m[i].id);
-                store.add(&filepath, &video, video.runtime);
+                store.add(&video.id, &video, video.runtime);
                 break;
             }
         }
@@ -131,6 +149,18 @@ pub fn main() {
         if matches.m.len() == 0 {
             store.add(&failedid, &video, video.runtime);
         }
+        //num_processed += 1;
+        //if store.candidates.len() == filelist.len() {
+        //    // all videos processed
+        //    break;
+        //}
     }
+    if storepath.is_file() {
+        let ret = std::fs::remove_file(storepath);
+        if ret.is_err() {
+            log::error!("Failed to delete store file");
+        }
+    }
+    store.dump_binary("demo_example_videos.store");
 }
 
