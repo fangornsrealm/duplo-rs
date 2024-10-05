@@ -148,12 +148,6 @@ fn test_query() {
     let (hash_b, _small_b) = crate::hash::create_hash(&img_b.into());
     store.add("imgA", &hash_a);
     store.add("imgB", &hash_b);
-    // Some plausibility checks.
-    let mut coefcount = 0;
-    for i in 0..store.indices.len() {
-        coefcount += store.indices[i].len();
-    }
-    //assert!(coefcount == 2 * (crate::store::TOPCOEFS as usize - 1) * 3);
 
     // Query the store.
     let (queryhash, _small_c) = crate::hash::create_hash(&img_c.into());

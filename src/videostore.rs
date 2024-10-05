@@ -165,7 +165,7 @@ impl VideoStore {
     /// The provided ID of the video and the index of the screenshot is the value
     /// that will be returned as the result of a similarity query. If an ID is
     /// already in the store, it is not added again.
-    pub fn add(&mut self, id: &str, video: &crate::videocandidate::VideoCandidate, runtime: u32) {
+    pub fn add(&mut self, id: &str, video: &crate::videocandidate::VideoCandidate, _runtime: u32) {
         if self.ids.contains_key(id) {
             return;
         }

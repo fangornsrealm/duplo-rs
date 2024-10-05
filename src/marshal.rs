@@ -61,24 +61,6 @@ pub fn restore_u32(from: &mut std::io::Cursor<Vec<u8>>) -> u32 {
     val
 }
 
-pub fn store_i32(val: i32, to: &mut Vec<u8>) {
-    let bytes = &val.to_be_bytes();
-    match to.write(&bytes[..]) {
-        Err(why) => panic!("couldn't write i32: {}", why),
-        Ok(retval) => retval,
-    };
-}
-
-pub fn restore_i32(from: &mut std::io::Cursor<Vec<u8>>) -> i32 {
-    let mut bytes = [0; 4];
-    match from.read_exact(&mut bytes) {
-        Err(why) => panic!("couldn't read u32: {}", why),
-        Ok(retval) => retval,
-    };
-    let val = i32::from_be_bytes(bytes);
-    val
-}
-
 pub fn store_i64(val: i64, to: &mut Vec<u8>) {
     let bytes = &val.to_be_bytes();
     match to.write(&bytes[..]) {

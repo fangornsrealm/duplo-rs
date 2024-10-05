@@ -1,5 +1,5 @@
 use clap::{command, Arg, ArgAction};
-use ctrlc;
+//use ctrlc;
 use log::LevelFilter;
 use pbr::ProgressBar;
 use simplelog::{ColorChoice, CombinedLogger, Config, TermLogger, TerminalMode, WriteLogger};
