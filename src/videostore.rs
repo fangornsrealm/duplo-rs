@@ -172,7 +172,8 @@ impl VideoStore {
         let index;
         if !self.ids.contains_key(id) {
             index = self.candidates.len();
-            self.candidates.push(crate::videocandidate::VideoCandidate::from(id, index));
+            self.candidates.push(video.clone());
+            self.candidates[index].index = index as u32;
             self.ids.insert(id.to_string(), index);
         }
         for i in 0..video.screenshots.len() {
@@ -265,6 +266,9 @@ impl VideoStore {
     fn search_matches(&self, hash: &crate::hash::Hash) -> crate::videomatches::VideoMatches {
         let mut ms = crate::videomatches::VideoMatches::new();
         // build a mapping of video, screenshot to a global image index
+        if self.candidates.len() == 0 {
+            return ms;
+        }
         let mut video_screenshot_to_score_map = Vec::new();
         let mut scoreid_to_video_screenshot_map = Vec::new();
         let mut sindex: usize = 0;
@@ -316,6 +320,11 @@ impl VideoStore {
                 let arr = &self.indices[location as usize];
                 for i in 0..arr.len() {
                     let matchscreenshot = arr[i].clone();
+                    if matchscreenshot.video_id as usize > video_screenshot_to_score_map.len() - 1  
+                        || video_screenshot_to_score_map[matchscreenshot.video_id as usize].len() == 0 {
+                            log::error!("Failed to lookup the video screenshot index");
+                            return ms;
+                    }
                     let sindex = video_screenshot_to_score_map[matchscreenshot.video_id as usize][matchscreenshot.screenshot_id as usize];
                     if scores[sindex].is_nan() {
                         // calculated initial score
@@ -365,14 +374,13 @@ impl VideoStore {
     /// and return a Match
     fn rate_match(&self, 
         matches: &crate::videomatches::VideoMatches, 
-        new_video_id: u32, 
+        new_video: &crate::videocandidate::VideoCandidate, 
         match_id: u32, 
         num_matches: usize
     ) -> crate::videomatches::VideoMatch 
     {
         let mut m = crate::videomatches::VideoMatch::new();
-        let newvideo = &self.candidates[new_video_id as usize];
-        for i in 0..matches.m.len() {
+         for i in 0..matches.m.len() {
             if matches.m[i].video_id == match_id {
                 let matchedvideo = matches.m[i].clone();
                 m.id = matchedvideo.id.clone();
@@ -382,7 +390,7 @@ impl VideoStore {
                 let matched = &self.candidates[match_id as usize];
                 m.score = -60.0                                                                            // base value
                             - 100.0 * (num_matches as f64 * 10.0) / matched.runtime as f64                 // the longer the similar part, the better the match
-                            + ((newvideo.width - matched.width) * (newvideo.width - matched.width)) as f64 // if the resolution is higher the match gets better
+                            + ((new_video.width - matched.width) * (new_video.width - matched.width)) as f64 // if the resolution is higher the match gets better
             }
         }
 
@@ -444,7 +452,7 @@ impl VideoStore {
             for id in dropped_videos {
                 // check if the sequence was longer than a minute
                 if sequences[id].len() > 5 {
-                    let videomatch = self.rate_match(&matches, video.index, *id, sequences[id].len());
+                    let videomatch = self.rate_match(&matches, &video, *id, sequences[id].len());
                     if videomatch.id.len() != 0 {
                         ms.m.push(videomatch);
                     }

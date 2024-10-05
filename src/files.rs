@@ -3,6 +3,7 @@ use std::fs;
 use std::iter;
 use std::path::PathBuf;
 use std::ffi::OsStr;
+use regex::Regex;
 use walkdir::WalkDir;
 
 const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -191,73 +192,174 @@ pub fn present_pairs(destination_dir: &std::path::PathBuf, remove_candidate: &st
     }
 }
 
+struct VideoMetadata {
+    duration: u32,
+    width: u32,
+    height: u32,
+    framerate: f32,
+}
+
+impl Default for VideoMetadata {
+    fn default() -> VideoMetadata {
+        VideoMetadata {
+            duration: 0,
+            width: 0,
+            height: 0,
+            framerate: 0.0,
+       }
+    }
+}
+
+pub fn string_to_uint(mystring: &str) -> u32 {
+    let u = 0;
+    if mystring.trim().len() == 0 {
+        return u;
+    }
+    match u32::from_str_radix(mystring, 10) {
+        Ok(ret) => return ret,
+        Err(_) => {
+            log::warn!("Parsing of {} into Integer failed\n", mystring)
+        }
+    }
+    u
+}
+
+pub fn string_to_float(mystring: &str) -> f32 {
+    let f = 0.0;
+    if mystring.trim().len() == 0 {
+        return f;
+    }
+    match mystring.parse::<f32>() {
+        Ok(ret) => return ret,
+        Err(_) => {
+            log::warn!("Parsing of {} into flaot failed\n", mystring)
+        }
+    }
+    f
+}
+
+fn video_metadata(filepath: &str) -> VideoMetadata {
+    let mut meta = VideoMetadata {..Default::default()};
+    let ffmpeg_output = std::process::Command::new("ffmpeg")
+        .args(["-i", filepath])
+        .output()
+        .expect("failed to execute process");
+    match String::from_utf8(ffmpeg_output.stderr) {
+        Ok(message) => {
+            let re_duration = Regex::new(r"(?i)\s*Duration:\s+(?P<hours>\d+):(?P<minutes>\d+):(?P<seconds>\d+).\d+\s*,").unwrap();
+            if re_duration.is_match(&message) {
+                let caps = re_duration.captures(&message).unwrap();
+                let hours = string_to_uint(&caps["hours"]);
+                let minutes = string_to_uint(&caps["minutes"]);
+                let seconds = string_to_uint(&caps["seconds"]);
+                meta.duration = hours * 3600 + minutes * 60 + seconds;
+            }
+            let re_video = Regex::new(r"(?i), (?P<width>\d+)x(?P<height>\d+).*, (?P<fps>\d+) fps").unwrap();
+            if re_video.is_match(&message) {
+                let caps = re_video.captures(&message).unwrap();
+                meta.width = string_to_uint(&caps["width"]);
+                meta.height = string_to_uint(&caps["height"]);
+                meta.framerate = string_to_float(&caps["fps"]);
+            }
+        },
+        Err(error) => log::error!("Error: {}", error),
+    }
+
+    meta
+}
+
+fn create_screenshots(
+    filepath: &str, 
+    video_id: u32,
+    num_videos: u32,
+) -> Result<(Vec<crate::videocandidate::Screenshot>, VideoMetadata), image::ImageError>  {
+    let mut v = Vec::new();
+
+    let meta = video_metadata(filepath);
+    let mut screenshot_id: usize = 0;
+    let mut timecode: u32 = 10;
+    let outputpattern = format!("{}_%03d.jpeg", filepath);
+    let output = format!("{}_001.jpeg", filepath);
+    let outputpath = std::path::Path::new(&output);
+    while timecode  < meta.duration {
+        let time = timecode_to_ffmpeg_time(timecode);
+        if outputpath.is_file() {
+            let ret = std::fs::remove_file(&output);
+            if ret.is_err() {
+                log::error!("could not delete file {}", output);
+            }
+        }
+
+        let ffmpeg_output = std::process::Command::new("ffmpeg")
+            .args(["-ss", &time, "-i", filepath, "-frames:v", "1", "-q:v", "2", &outputpattern])
+            .output()
+            .expect("failed to execute process");
+        match String::from_utf8(ffmpeg_output.stderr) {
+            Ok(_message) => log::warn!("Processing video {} of {} path {} timecode {}", video_id + 1, num_videos, filepath, time),
+            Err(error) => log::error!("Error: {}", error),
+        }
+        if !outputpath.is_file() {
+            log::error!("Failed to create screenshot");
+        }
+        let res = image::ImageReader::open(outputpath);
+        if res.is_ok() {       
+            let dynimg = res.unwrap().decode();
+            if dynimg.is_err() {
+                return Ok((v, meta));
+            }
+            let img = dynimg.unwrap();
+            let (hash, _smallimg) = crate::hash::create_hash(&img.into());
+            let ss = crate::videocandidate::Screenshot::from(
+                filepath,
+                video_id as usize,
+                screenshot_id,
+                timecode,
+                &hash,
+            );
+            v.push(ss);
+        }
+        timecode += 10;
+        screenshot_id += 1;
+    }
+    if outputpath.is_file() {
+        let ret = std::fs::remove_file(&output);
+        if ret.is_err() {
+            log::error!("could not delete file {}", output);
+        }
+    }
+
+    Ok((v, meta))
+}
+
+fn timecode_to_ffmpeg_time(timecode: u32) -> String {
+    let hours = timecode / 3600;
+    let minutes = (timecode - hours * 3600) / 60;
+    let seconds = timecode - hours * 3600 - minutes * 60;
+    format!("{:02}:{:02}:{:02}.000", hours, minutes, seconds)
+}
+
 /// reads a video file, creating screenshots every 10 seconds, 
 /// creates a hash for each screenshot 
 /// and compares it with the hashes of screenshots of existing videos.
 /// Delivers existing Matches and the new data structure back to the calling program.
-pub fn process_video(path: &PathBuf, store: &crate::videostore::VideoStore) 
+pub fn process_video(path: &PathBuf, store: &crate::videostore::VideoStore, num_videos: u32) 
 -> crate::videocandidate::VideoCandidate 
 {
-    use video_rs;
-    video_rs::init().unwrap();
-    let location = video_rs::location::Location::File(path.clone());
-    let ret = video_rs::Decoder::new(location);
-    if ret.is_err() {
-        log::error!("Failed to open {} for reading!", path.display());
-        return crate::videocandidate::VideoCandidate::new();
-    }
     let id = osstring_to_string(path.as_os_str());
-    let mut decoder = ret.unwrap();
     let mut video = crate::videocandidate::VideoCandidate::from(
                 &id, store.candidates.len());
-    (video.width, video.height) = decoder.size();
-    let duration_opt = decoder.duration();
-    if duration_opt.is_err() {
-        log::error!("Failed to read runtime from video file!");
-        return crate::videocandidate::VideoCandidate::new();
-    }
-    video.runtime = duration_opt.unwrap().as_secs() as u32;
-    video.framerate = decoder.frame_rate();
-    for timestamp in (10..video.runtime).step_by(10) {
-        decoder.seek((timestamp * 1000) as i64);
-        let frame_opt = decoder.decode();
-        if frame_opt.is_err() {
-            log::error!("Failed to read frame at {} seconds from video!", timestamp);
-            continue;
-        }
-        let (_timecode, frame) = frame_opt.unwrap();
-        
-        let rawpixels_opt = frame.as_slice();
-        if rawpixels_opt.is_none() {
-            log::error!("Failed to convert frame at {} seconds into raw data!", timestamp);
-            continue;
-        }
-        let rawpixels = Vec::from(rawpixels_opt.unwrap());
-        let mut rgbapixels = Vec::new();
-        let mut index = 0;
-        for i in 0..rawpixels.len() {
-            if index < 3 {
-                rgbapixels.push(rawpixels[i]);
-                index += 1;
-            } else {
-                rgbapixels.push(255);
-                index = 0;
+
+    match create_screenshots(&id, video.index, num_videos) {
+        Ok((v, meta)) => {
+            video.width = meta.width;
+            video.height = meta.height;
+            video.runtime = meta.duration;
+            video.framerate = meta.framerate;
+            for ss in v {
+                video.screenshots.push(ss);
             }
         }
-        let res = image::RgbaImage::from_raw(video.width, video.height, rgbapixels);
-        if res.is_some() {
-            let img = res.unwrap();
-            let (hash, _smallimg) = crate::hash::create_hash(&img.into());
-            let candidate = crate::videocandidate::Screenshot::from(
-                                        &id, 
-                                        video.index as usize, 
-                                        video.screenshots.len(), 
-                                        timestamp, 
-                                        &hash);
-            video.screenshots.push(candidate);
-        } else {
-            log::error!("Failed to create a hash at {} seconds!", timestamp);
-        }
+        Err(error) => log::error!("error: {}", error),
     }
     video
 }

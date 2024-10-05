@@ -12,13 +12,12 @@ name = "demo_similar_videos"
 path = "examples/demo_similar_videos.rs"
 
 [dependencies]
-#array2d = "0.3.2"
 base64 = "0.22.1"
 image = "0.25.2"
 imagesize = "0.13"
 hamming_rs = "0.2.22"
 rand = "0.8.5"
-video-rs = { version = "0.9", features = ["ndarray"] }
+regex = "1.11.0"
 walkdir = "2.5.0"
 log = { version = "0.4.22", features = [
     "max_level_debug",

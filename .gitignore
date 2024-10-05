@@ -1,1 +1,5 @@
-/target
+target/*
+testtfiles/*
+Cargo.lock
+*~
+*.bak
