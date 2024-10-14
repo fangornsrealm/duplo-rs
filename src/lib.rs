@@ -29,7 +29,6 @@ pub mod videocandidate;
 mod videomatches;
 pub mod videostore;
 
-
 /// processes all the images in the list.
 /// fills the data structure one by one. 
 /// compares to all the previously hashed images.

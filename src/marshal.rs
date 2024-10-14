@@ -267,3 +267,23 @@ pub fn restore_hash_string_usize(from: &mut std::io::Cursor<Vec<u8>>) -> std::co
     }
     val
 }
+
+pub fn store_hash_u32_usize(val: &std::collections::BTreeMap<u32, usize>, to: &mut Vec<u8>) {
+    let t = val.len();
+    store_usize(t, to);
+    for (key, value) in val {
+        store_u32(*key, to);
+        store_usize(*value, to);
+    }
+}
+
+pub fn restore_hash_u32_usize(from: &mut std::io::Cursor<Vec<u8>>) -> std::collections::BTreeMap<u32, usize> {
+    let mut val = std::collections::BTreeMap::new();
+    let t = restore_usize(from);
+    for _i in 0..t {
+        let key = restore_u32(from);
+        let value = restore_usize(from);
+        val.insert(key, value);
+    }
+    val
+}

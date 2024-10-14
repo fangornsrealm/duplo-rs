@@ -33,7 +33,12 @@ pub fn walk_dir_images(dirpath: &str) -> Vec<PathBuf> {
     for f in dir {
         if f.is_ok() {
             let file = f.unwrap(); 
-            let filepath = file.path();
+            let filepathopt = file.path().canonicalize();
+            if filepathopt.is_err() {
+                log::error!("Failed to make an absolute path for {}", file.path().display());
+                return p;
+            }
+            let filepath = filepathopt.unwrap();
             if filepath.is_file() {
                 let e = filepath.extension();
                 if e.is_some() {
@@ -56,7 +61,12 @@ pub fn walk_tree_images(dirpath: &str) -> Vec<PathBuf> {
             .follow_links(true)
             .into_iter()
             .filter_map(|e| e.ok()) {
-        let filepath = entry.path();
+        let filepathopt = entry.path().canonicalize();
+        if filepathopt.is_err() {
+            log::error!("Failed to make an absolute path for {}", entry.path().display());
+            return p;
+        }
+        let filepath = filepathopt.unwrap();
         if filepath.is_file() {
             let e = filepath.extension();
             if e.is_some() {
@@ -82,7 +92,12 @@ pub fn walk_dir_videos(dirpath: &str) -> Vec<PathBuf> {
     for f in dir {
         if f.is_ok() {
             let file = f.unwrap(); 
-            let filepath = file.path();
+            let filepathopt = file.path().canonicalize();
+            if filepathopt.is_err() {
+                log::error!("Failed to make an absolute path for {}", file.path().display());
+                return p;
+            }
+            let filepath = filepathopt.unwrap();
             if filepath.is_file() {
                 let e = filepath.extension();
                 if e.is_some() {
@@ -105,7 +120,12 @@ pub fn walk_tree_videos(dirpath: &str) -> Vec<PathBuf> {
             .follow_links(true)
             .into_iter()
             .filter_map(|e| e.ok()) {
-        let filepath = entry.path();
+        let filepathopt = entry.path().canonicalize();
+        if filepathopt.is_err() {
+            log::error!("Failed to make an absolute path for {}", entry.path().display());
+            return p;
+        }
+        let filepath = filepathopt.unwrap();
         if filepath.is_file() {
             let e = filepath.extension();
             if e.is_some() {
@@ -192,6 +212,75 @@ pub fn present_pairs(destination_dir: &std::path::PathBuf, remove_candidate: &st
     }
 }
 
+fn prepare_video_table(compare: &Vec<crate::videocandidate::VideoCandidate>) -> String {
+    let mut v = String::from("<table><thead>\n<tr><th>Video</th><th>Info</th></tr>\n</thead><tbody>\n");
+    for i in 0..compare.len() {
+        let filepath = std::path::Path::new(&compare[i].id);
+        let fileformat;
+        let e = filepath.extension();
+        if e.is_some() {
+            let ext = e.unwrap();
+            let extstring = osstring_to_string(ext).to_ascii_lowercase();
+            if extstring == "mkv" || extstring == "webm" {
+                fileformat = "webm".to_string();
+            } else if extstring == "mp4" || extstring == "mpv" {
+                fileformat = "mp4".to_string();
+            } else {
+                fileformat = "webm".to_string();
+            }
+            v = format!(r##"{}<tr><td><video controls width="320">\n<source src="{}" type="video/{}" />/td>"##, v, compare[i].id, fileformat);
+            v = format!(r##"{}<td><a href="{}">link</a>\n<p>Resolution: {}x{}</p>\n<p>Duration: {}</p></td></tr>\n"##, 
+                        v, compare[i].id, compare[i].width, compare[i].height, compare[i].runtime);
+        }
+        v = format!("{}</tbody></table>", v);
+    }
+    v
+}
+
+pub fn present_video_matches(destination_dir: &std::path::PathBuf, compare: &Vec<crate::videocandidate::VideoCandidate>) {
+    use build_html::*;
+    use std::io::Write;
+    if compare.len() < 2 {
+        return;
+    }
+    let basefile_opt = std::path::Path::new(&compare[0].id).file_stem();
+    if basefile_opt.is_none() {
+        return;
+    }
+    let basefile = osstring_to_string(&basefile_opt.unwrap());
+    let title = format!("Comparing similar videos for {}", basefile);
+    let table = prepare_video_table(compare);
+    let html = build_html::HtmlPage::new()
+    .with_title(&title)
+    .with_header(1, &title)
+    .with_html(
+        HtmlElement::new(HtmlTag::Table)
+            .with_attribute("id", "Matches")
+            .with_paragraph(&table)
+    )
+    .to_html_string();
+    let storefile = destination_dir.join(format!("{}.html", basefile));
+    let path = std::path::Path::new(&storefile);
+    let display = path.display();
+    // Open a file in write-only mode, returns `io::Result<File>`
+    let mut write_file = match std::fs::File::create(&path) {
+        Err(why) => panic!("couldn't create {}: {}", display, why),
+        Ok(write_file) => write_file,
+    };
+    let ret = write_file.write(&html.as_bytes());
+    if ret.is_err() {
+        log::error!("failed to write html data to file {}!", storefile.display())
+    }
+    let ret = write_file.flush();
+    if ret.is_err() {
+        log::error!(
+            "failed to empty the write buffer for html data to file {}!",
+            &storefile.display()
+        )
+    }
+
+}    
+    
 struct VideoMetadata {
     duration: u32,
     width: u32,
@@ -364,10 +453,14 @@ pub fn process_video(path: &PathBuf, video_id: usize, num_videos: u32)
     video
 }
 
-pub fn find_similar_videos(store: &crate::videostore::VideoStore, id: &str, video: &crate::videocandidate::VideoCandidate) 
+pub fn find_similar_videos(
+    store: &crate::videostore::VideoStore, 
+    client: &mut postgres::Client, 
+    id: &str, 
+    video: &crate::videocandidate::VideoCandidate) 
 -> (crate::videomatches::VideoMatches, String, crate::videocandidate::VideoCandidate)
 {
-    let matches = store.query(video);
+    let matches = store.query(client, video);
     (matches, id.to_string(), video.clone())
 }
 
