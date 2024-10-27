@@ -19,7 +19,7 @@ There are example programs showing how this library can be used.
 
 ### demo_similar_images
 
-```
+```sh
 cargo build --release --example demo_similar_images
 ./target/release/examples/demo_similar_images [options] <path to search>
 ```
@@ -30,22 +30,20 @@ The storage ist persistent. So you can run the app again, using the same or a di
 
 ### demo_similar_videos
 
-```
+```sh
 cargo build --release --example demo_similar_videos
 ./target/release/examples/demo_similar_videos [options] <path to search>
 ```
 
 This application reads every video in the directory or directory tree and compares it to the already read videos. The recent video is stored in the database so it doesn't have to be parsed again. When running the program again, the already read files are checked and the deleted files are removed from the database. For each new video it compares the screenshots with previously read videos. If it finds matches it exports a HTML file with previews and metadata into the directory `similar_videos` with the name of the new video. As there is no clear criterum no files are deleted. The user has to review the matches and decide for themselves.
 
-The storage ist persistent. So you can run the app again, using the same or a different start path.
+The storage is persistent. So you can run the app again, using the same or a different start path.
 
-## Usage
-
-```
+```toml
 duplo-rs = "1.0.0"
 ```
 
-```
+```rust
 use duplo_rs;
 
 // Create an empty store.
@@ -61,7 +59,7 @@ let (matches, failedid, failedhash) =
 // matches[0] is the best match.
 ```
 
-```
+```rust
 use duplo_rs;
 
 // Create an empty store.
@@ -69,7 +67,7 @@ let sql_client_opt = duplo_rs::videostore::connect("localhost", "username", "pas
 if sql_client_opt.is_ok() {
     let mut sql_client = sql_client_opt.unwrap();
     let mut store = duplo_rs::videostore::VideoStore::new(&mut sql_client, sensitivity);
-
+}
 // Add image "img" to the store.
 let video = duplo_rs::files::process_video(file, video_id as usize, num_videos);
 store.add(&mut sql_client, &video.id, &video, video.runtime);
@@ -82,10 +80,10 @@ let (matches, failedid, _failedhash) =
 
 ## Documentation
 
-http://github.com/zuiopqewrt/duplo-rs
+[http://github.com/zuiopqewrt/duplo-rs](http://github.com/zuiopqewrt/duplo-rs)
 
 ## Possible Applications
 
-* Identify copyright violations
-* Save disk space by detecting and removing duplicate images or videos
-* Search for images or videos by similarity
+- Identify copyright violations
+- Save disk space by detecting and removing duplicate images or videos
+- Search for images or videos by similarity

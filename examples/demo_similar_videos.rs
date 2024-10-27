@@ -44,7 +44,7 @@ pub fn main() {
         .arg(Arg::new("logfile").short('l').long("log"))
         .arg(Arg::new("directory").short('d').long("directory"))
         .arg(Arg::new("sensitivity").short('s').long("sensitivity"))
-        .arg(Arg::new("num_threads").short('t').long("num_threads"))
+        //.arg(Arg::new("num_threads").short('t').long("num_threads"))
         .arg(
             Arg::new("recursive")
                 .short('r')
@@ -65,12 +65,12 @@ pub fn main() {
             sensitivity -= ret.unwrap() as f64;
         }
     }
-    if let Some(ret) = matches.get_one::<String>("num_threads") {
-        let ret = i64::from_str_radix(ret, 10);
-        if ret.is_ok() {
-            num_threads = ret.unwrap() as u32;
-        }
-    }
+    //if let Some(ret) = matches.get_one::<String>("num_threads") {
+    //    let ret = i64::from_str_radix(ret, 10);
+    //    if ret.is_ok() {
+    //        num_threads = ret.unwrap() as u32;
+    //    }
+    //}
     if let Some(ret) = matches.get_one::<bool>("recursive") {
         recursive = *ret;
     }
@@ -125,6 +125,7 @@ pub fn main() {
             &directory,
             num_threads,
         );
+        progressbar.add(store.num_candidates as u64);
         let num_videos = filelist.len() as u32;
         //let prev_videos = store.num_candidates;
         let mut video_id_counter = store.num_candidates + 1;
