@@ -1,15 +1,17 @@
 //use array2d::{Array2D, Error};
-use std::io::{Read, Write};
 use log;
-use postgres::{Client, NoTls};
+use std::io::{Read, Write};
+use rusqlite::{Connection, Result, params};
 
-static WEIGHTS: [[f64;6];3] = [[5.00_f64, 0.83, 1.01, 0.52, 0.47, 0.30], 
-                [19.21, 1.26, 0.44, 0.53, 0.28, 0.14],
-                [34.37, 0.36, 0.45, 0.14, 0.18, 0.27]];
+static WEIGHTS: [[f64; 6]; 3] = [
+    [5.00_f64, 0.83, 1.01, 0.52, 0.47, 0.30],
+    [19.21, 1.26, 0.44, 0.53, 0.28, 0.14],
+    [34.37, 0.36, 0.45, 0.14, 0.18, 0.27],
+];
 pub const IMAGESCALE: u32 = 128;
 pub const INDICESMAX: u32 = 98400;
 pub static TOPCOEFS: i32 = 40;
-static WEIGHTSUMS: [f64;6] = [58.58 as f64, 2.45, 1.9, 1.19, 0.93, 0.71];
+static WEIGHTSUMS: [f64; 6] = [58.58 as f64, 2.45, 1.9, 1.19, 0.93, 0.71];
 pub static CTRL_C_PRESSED: bool = false;
 
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
@@ -27,17 +29,21 @@ impl Default for ScreenshotIndex {
             video_id: 0,
             screenshot_id: 0,
             runtime: 0,
-       }
+        }
     }
 }
 
 impl ScreenshotIndex {
     pub fn new() -> Self {
-        ScreenshotIndex {..Default::default()}
+        ScreenshotIndex {
+            ..Default::default()
+        }
     }
 
     pub fn from(filename: &str, video_id: u32, screenshot_id: u32, runtime: u32) -> Self {
-        let mut v = ScreenshotIndex {..Default::default()};
+        let mut v = ScreenshotIndex {
+            ..Default::default()
+        };
         v.id = filename.to_string();
         v.video_id = video_id;
         v.screenshot_id = screenshot_id;
@@ -64,8 +70,8 @@ impl ScreenshotIndex {
 
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub struct Sequence {
-    pub video_id: u32,       // index of this video
-    pub last_timecode: u32,  // time in seconds
+    pub video_id: u32,      // index of this video
+    pub last_timecode: u32, // time in seconds
     pub sequence: Vec<u32>,
 }
 
@@ -75,17 +81,21 @@ impl Default for Sequence {
             video_id: 0,
             last_timecode: 0,
             sequence: Vec::new(),
-       }
+        }
     }
 }
 
 impl Sequence {
     pub fn new() -> Self {
-        Sequence {..Default::default()}
+        Sequence {
+            ..Default::default()
+        }
     }
 
     pub fn from(video_id: u32, timecode: u32, screenshot_id: u32) -> Self {
-        let mut v = Sequence {..Default::default()};
+        let mut v = Sequence {
+            ..Default::default()
+        };
         v.video_id = video_id;
         v.last_timecode = timecode;
         v.sequence.push(screenshot_id);
@@ -102,9 +112,9 @@ impl Sequence {
 /// data structures to hold uint64 indices instead of uint32 indices.
 ///
 /// candidates contains all images in the store or, rather, the candidates for a query.
-/// 
+///
 /// All IDs in the store, mapping to candidate indices.
-/// 
+///
 /// indices  contains references to the images in the store. It is a slice
 /// of slices which contains image indices (into the "candidates" slice).
 /// Use the following formula to access an index slice:
@@ -116,25 +126,28 @@ impl Sequence {
 ///	sign: Either 0 (positive) or 1 (negative)
 ///	coefIdx: The index of the coefficient (from 0 to (ImageScale*ImageScale)-1)
 ///	channel: The colour channel (from 0 to haar.ColourChannels-1)
-///     
-/// sentivity (Hamming distance threshold) for the perceptual hashes. 
+///
+/// sentivity (Hamming distance threshold) for the perceptual hashes.
 /// Larger values will allow more images to be seen as *similar*
-/// 
+///
 /// modified tells Whether this store was modified since it was loaded/created.
 ///
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub struct VideoStore {
-	//sync.RWMutex,
+    //sync.RWMutex,
     pub num_candidates: u32,
-	//pub candidates: Vec<crate::videocandidate::VideoCandidate>,
+    //pub candidates: Vec<crate::videocandidate::VideoCandidate>,
     pub num_images: u32,
 
-	pub ids: std::collections::BTreeMap<String, usize>,
-	pub video_ids: std::collections::BTreeMap<u32, usize>,
+    pub ids: std::collections::BTreeMap<String, usize>,
+    pub video_ids: std::collections::BTreeMap<u32, usize>,
 
-	//pub indices: Vec<Vec<ScreenshotIndex>>,
+    //pub indices: Vec<Vec<ScreenshotIndex>>,
     pub num_indices: std::collections::BTreeMap<u32, usize>,
+    pub num_index_values: u32,
     sensitivity: f64,
+    pub start_directory: String,
+    pub num_threads: u32,
 
     pub modified: bool,
 }
@@ -149,17 +162,240 @@ impl Default for VideoStore {
             video_ids: std::collections::BTreeMap::new(),
             //indices: Vec::new(),
             num_indices: std::collections::BTreeMap::new(),
-            
+            num_index_values: 0,
+            start_directory: ".".to_string(),
+            num_threads: 1,
             sensitivity: -100.0,
             modified: false,
-       }
+        }
     }
 }
 
 impl VideoStore {
-    pub fn new(sensitivity: f64) -> Self {
-        let mut v = VideoStore {..Default::default()};
+    pub fn new(
+        connection: &mut rusqlite::Connection,
+        sensitivity: f64,
+        start_directory: &str,
+        num_threads: u32,
+    ) -> Self {
+        let mut v = VideoStore {
+            ..Default::default()
+        };
         v.sensitivity = sensitivity;
+        v.start_directory = start_directory.to_string();
+        v.num_threads = num_threads;
+        let query = "SELECT sensitivity, start_directory, num_threads FROM videostore_parameters WHERE config_id = 1";
+        match connection.prepare(query) {
+            Ok(mut statement) => {
+                match statement.query(params![]) {
+                    Ok(mut rows) => {
+                        loop { 
+                            match rows.next() {
+                                Ok(Some(row)) => {
+                                    let s_opt = row.get(1);
+                                    if s_opt.is_ok() {
+                                        v.sensitivity = s_opt.unwrap();
+                                    }
+                                    let s_opt = row.get(2);
+                                    if s_opt.is_ok() {
+                                        v.start_directory = s_opt.unwrap();
+                                    }
+                                    let s_opt = row.get(3);
+                                    if s_opt.is_ok() {
+                                        v.num_threads = s_opt.unwrap();
+                                    }
+                                    break;
+                                },
+                                Ok(None) => {
+                                    log::warn!("No data read from parameters.");
+                                    break;
+                                },
+                                Err(error) => {
+                                    log::error!("Failed to read a row from parameters: {}", error);
+                                    break;
+                                }
+                            }
+                        }
+                    },
+                    Err(err) => {
+                        log::error!("could not read line from parameter database: {}", err);
+                    }
+                }
+                if v.sensitivity != sensitivity || v.num_threads != num_threads {
+                    // change the parameters in the database
+                    let query_delete = "DELETE FROM duplo_rs.videostore_parameters WHERE config_id = 1";
+                    match connection.execute(query_delete, params![]) {
+                        Ok(retval) => log::warn!("Deleted {} data from parameters.", retval),
+                        Err(error) => {
+                            log::error!("Failed to delete data from parameter database: {}", error);
+                            return v;
+                        }
+                    }
+                    let sensitivity_u32 = v.sensitivity as u32;
+                    match connection.execute(
+                        "INSERT INTO videostore_parameters (config_id, sensitivity, start_directory, num_threads) VALUES (?1, ?2, ?3, ?4)",
+                        params![&1, &sensitivity_u32, &v.start_directory, &v.num_threads],
+                    ) {
+                        Ok(retval) => log::warn!("Inserted {} data into parameter.", retval),
+                        Err(error) => {
+                            log::error!("Failed to insert data into parameter database: {}", error);
+                            return v;
+                        }
+                    }
+                    v.sensitivity = sensitivity;
+                    v.start_directory = start_directory.to_string();
+                    v.num_threads = num_threads;
+                }
+            },
+            Err(error) => {
+                log::error!("Could not prepare statement {}: {}", query, error);
+                return v;
+            }
+        }
+        let query_candidates = "SELECT candidate_id, filename, video_id FROM videostore_candidates";
+        match connection.prepare(query_candidates) {
+            Ok(mut statement) => {
+                match statement.query(params![]) {
+                    Ok(mut rows) => {
+                        loop {
+                            match rows.next() {
+                                Ok(Some(row)) => {
+                                    let mut candidate_id: usize;
+                                    let id;
+                                    let video_id;
+                                    match row.get(0) {
+                                        Ok(s) => candidate_id = s,
+                                        Err(error) => {
+                                            log::error!("Failed to read candiate_id for video: {}", error);
+                                            continue;
+                                        }
+                                    }
+                                    match row.get(1) {
+                                        Ok(s) => id = s,
+                                        Err(error) => {
+                                            log::error!("Failed to read id for video: {}", error);
+                                            continue;
+                                        }
+                                    }
+                                    match row.get(2) {
+                                        Ok(s) => video_id = s,
+                                        Err(error) => {
+                                            log::error!("Failed to read video_id for video: {}", error);
+                                            continue;
+                                        }
+                                    }
+                                    candidate_id -= 1;
+                                    v.ids.insert(id, candidate_id as usize);
+                                    v.video_ids.insert(video_id, candidate_id as usize);
+                                    v.num_candidates += 1;
+                                },
+                                Ok(None) => {
+                                    log::warn!("No data read from candidates.");
+                                    break;
+                                },
+                                Err(error) => {
+                                    log::error!("Failed to read a row from candidates: {}", error);
+                                    break;
+                                }
+                            }
+                        }
+                    },
+                    Err(err) => {
+                        log::error!("could not read line from candidate database: {}", err);
+                    }
+                }
+            },
+            Err(error) => {
+                log::error!("Could not prepare statement {}: {}", query_candidates, error);
+                return v;
+            }
+        }
+        // fill the num_indices  and number of indices values
+        let query_index_location_count = "SELECT location, COUNT(index_id) FROM videostore_indices GROUP BY location";
+        match connection.prepare(query_index_location_count) {
+            Ok(mut statement) => {
+                match statement.query(params![]) {
+                    Ok(mut rows) => {
+                        loop {
+                            match rows.next() {
+                                Ok(Some(row)) => {
+                                    let location;
+                                    let num_entries;
+                                    match row.get(0) {
+                                        Ok(s) => location = s,
+                                        Err(error) => {
+                                            log::error!("Failed to read location for indices: {}", error);
+                                            continue;
+                                        }
+                                    }
+                                    match row.get(1) {
+                                        Ok(s) => num_entries = s,
+                                        Err(error) => {
+                                            log::error!("Failed to read count for indices: {}", error);
+                                            continue;
+                                        }
+                                    }
+                                    v.num_indices.insert(location, num_entries);
+                                },
+                                Ok(None) => {
+                                    log::warn!("No data read from indices.");
+                                    break;
+                                },
+                                Err(error) => {
+                                    log::error!("Failed to read a row from indices: {}", error);
+                                    break;
+                                }
+                            }
+                        }
+                    },
+                    Err(err) => {
+                        log::error!("could not read line from indices database: {}", err);
+                    }
+                }
+            },
+            Err(error) => {
+                log::error!("Could not prepare statement {}: {}", query_index_location_count, error);
+                return v;
+            }
+        }
+
+        let query_index_count = "SELECT COUNT(index_id) FROM videostore_indices";
+        match connection.prepare(query_index_count) {
+            Ok(mut statement) => {
+                match statement.query(params![]) {
+                    Ok(mut rows) => {
+                        loop {
+                            match rows.next() {
+                                Ok(Some(row)) => {
+                                    match row.get(0) {
+                                        Ok(s) => v.num_index_values = s,
+                                        Err(error) => {
+                                            log::error!("Failed to read count for indices: {}", error);
+                                            continue;
+                                        }
+                                    }
+                                },
+                                Ok(None) => {
+                                    log::warn!("No data read from indices.");
+                                    break;
+                                },
+                                Err(error) => {
+                                    log::error!("Failed to read a row from indices: {}", error);
+                                    break;
+                                }
+                            }
+                        }
+                    },
+                    Err(err) => {
+                        log::error!("could not read line from indices database: {}", err);
+                    }
+                }
+            },
+            Err(error) => {
+                log::error!("Could not prepare statement {}: {}", query_index_count, error);
+                return v;
+            }
+        }
         v
     }
 
@@ -170,29 +406,38 @@ impl VideoStore {
         false
     }
 
-    /// Add adds an image (via its hash) to the store. 
+    /// Add adds an image (via its hash) to the store.
     /// The provided ID of the video and the index of the screenshot is the value
     /// that will be returned as the result of a similarity query. If an ID is
     /// already in the store, it is not added again.
-    pub fn add(&mut self, client: &mut postgres::Client, id: &str, video: &crate::videocandidate::VideoCandidate, _runtime: u32) {
+    pub fn add(
+        &mut self,
+        connection: &mut rusqlite::Connection,
+        id: &str,
+        video: &crate::videocandidate::VideoCandidate,
+        _runtime: u32,
+    ) {
         if self.ids.contains_key(id) {
             return;
         }
-        let index;
+        let candidate_id;
         if !self.ids.contains_key(id) {
-            index = self.num_candidates;
+            candidate_id = self.num_candidates + 1;
             let mut blob = Vec::new();
             video.encode(&mut blob);
-            let ret = client.execute(
-                "INSERT INTO duplo_rs.videostore_candidates (index, filename, video_id, data) VALUES ($1, $2, $3, $4)",
-                &[&index, &video.id, &video.index, &blob],
-            );
-            if ret.is_err() {
-                log::error!("Failed to insert candidate {}!", video.id);
-                return;
+            match connection.execute(
+                "INSERT INTO videostore_candidates (candidate_id, filename, video_id, data) VALUES (?1, ?2, ?3, ?4)",
+                params![&candidate_id, &video.id, &video.index, &blob],
+            ) {
+                Ok(_retval) => {}, //log::warn!("Inserted {} video with ID {} and location {} into candidates.", video.id, video.index, candidate_id),
+                Err(error) => {
+                    log::error!("Failed to insert video {} into  database: {}", video.id, error);
+                    return;
+                }
             }
-            self.video_ids.insert(video.index, index as usize);
-            self.ids.insert(id.to_string(), index as usize);
+            self.num_candidates += 1;
+            self.video_ids.insert(video.index, candidate_id as usize);
+            self.ids.insert(id.to_string(), candidate_id as usize);
         }
         for i in 0..video.screenshots.len() {
             let hash = &video.screenshots[i].hash;
@@ -210,21 +455,27 @@ impl VideoStore {
                     if colorcoef < 0.0 {
                         sign = 1;
                     }
-                    let location = sign * IMAGESCALE *IMAGESCALE * crate::haar::COLOURCHANNELS 
-                                        + coefindex as u32 * crate::haar::COLOURCHANNELS + colorindex as u32;
+                    let location = sign * IMAGESCALE * IMAGESCALE * crate::haar::COLOURCHANNELS
+                        + coefindex as u32 * crate::haar::COLOURCHANNELS
+                        + colorindex as u32 + 1;
                     if !self.num_indices.contains_key(&location) {
                         self.num_indices.insert(location, 0);
                     }
-                    let arrayindex = self.num_indices[&location] as u32;
-                    let ret = client.execute(
-                        "INSERT INTO duplo_rs.videostore_indices (location, arrayindex, filename, video_id, screenshot_id, runtime) VALUES ($1, $2, $3, $4, $5, $6)",
-                        &[&location, &arrayindex, &video.id, &video.screenshots[i].video_id, &video.screenshots[i].screenshot_id, &video.runtime],
-                    );
-                    if ret.is_err() {
-                        log::error!("Failed to insert candidate {}!", video.id);
-                        return;
+                    let arrayindex = self.num_indices[&location] as u32 + 1;
+                    let index_id = self.num_index_values + 1;
+                    match connection.execute(
+                        "INSERT INTO videostore_indices (index_id, location, arrayindex, filename, video_id, screenshot_id, runtime) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                        params![&index_id, location, &arrayindex, &video.id, &video.index, &video.screenshots[i].screenshot_id, &video.runtime],
+                    ) {
+                        Ok(_retval) => {}, //log::warn!("Inserted screenshot {} video_id {} into indices at location {} as {} element.", video.screenshots[i].screenshot_id, video.index, location, arrayindex),
+                        Err(error) => {
+                            log::error!("Failed to insert video {} into  database: {}", video.id, error);
+                            return;
+                        }
+        
                     }
                     *self.num_indices.get_mut(&location).unwrap() += 1;
+                    self.num_index_values += 1;
                 }
             }
         }
@@ -244,24 +495,41 @@ impl VideoStore {
     /// index will be removed from all index lists. This also means that Size() will
     /// not decrease. This is an expensive operation. If the provided ID could not be
     /// found, nothing happens.
-    pub fn delete(&mut self, client: &mut postgres::Client, id: &str) {
+    pub fn delete(&mut self, connection: &mut rusqlite::Connection, id: &str) {
         if !self.ids.contains_key(id) {
             return;
         }
         // Get the index.
         //let index = self.ids[id];
-        let row_opt = client.query(&format!("SELECT video_id FROM duplo_rs.videostore_candidates WHERE filename = {}", id), &[]);
-        if row_opt.is_ok() {
-            for row in row_opt.unwrap() {
-                let video_id: u32 = row.get(0);
-                self.video_ids.remove(&video_id);
+        let query = "SELECT video_id FROM videostore_candidates WHERE filename = ?1";
+        match connection.prepare(query) {
+            Ok(mut statement) => {
+                match statement.query(params![id]) {
+                    Ok(mut rows) => {
+                        while let Ok(Some(row)) = rows.next() {
+                            let s_opt = row.get(1);
+                            if s_opt.is_ok() {
+                                let video_id = s_opt.unwrap();
+                                self.video_ids.remove(&video_id);
+                            }
+                        }
+                    },
+                    Err(err) => {
+                        log::error!("could not read line from videostore_candidates database: {}", err);
+                    }
+                }
+            },
+            Err(error) => {
+                log::error!("Failed to get video_id for {} from database: {}", id, error);
+                return;
             }
         }
         self.modified = true;
         // clear the entry in the candidates list without deleting it
-        let ret = client.execute(
-            &format!("DELETE FROM duplo_rs.videostore_candidates WHERE filename = {}", id), 
-            &[]);
+        let ret = connection.execute(
+            "DELETE FROM videostore_candidates WHERE filename = ?1",
+            params![&id],
+        );
         if ret.is_err() {
             log::error!("Failed to delete candidate {}!", id);
             return;
@@ -269,9 +537,10 @@ impl VideoStore {
         self.ids.remove(id);
 
         // Remove from all index lists.
-        let ret = client.execute(
-            &format!("DELETE FROM duplo_rs.videostore_indices WHERE filename = {}", id), 
-            &[]);
+        let ret = connection.execute(
+            "DELETE FROM videostore_indices WHERE filename = ?1",
+            params![&id],
+        );
         if ret.is_err() {
             log::error!("Failed to delete indices for {}!", id);
             return;
@@ -281,8 +550,8 @@ impl VideoStore {
     /// Exchange exchanges the ID of an image for a new one. If the old ID could not
     /// be found, nothing happens. If the new ID already existed prior to the
     /// exchange, the function returns immediately.
-    /// 
-    pub fn exchange(&mut self, client: &mut postgres::Client, oldid: &str, newid: &str) -> bool {
+    ///
+    pub fn exchange(&mut self, connection: &mut rusqlite::Connection, oldid: &str, newid: &str) -> bool {
         if !self.ids.contains_key(oldid) {
             return false;
         }
@@ -295,9 +564,9 @@ impl VideoStore {
         self.ids.insert(newid.to_string(), index);
 
         // Update the candidate.
-        let ret = client.execute(
-            "UPDATE duplo_rs.videostore_candidates filename = $1 WHERE filename = $2",  
-            &[&newid, &oldid],
+        let ret = connection.execute(
+            "UPDATE videostore_candidates filename = ?1 WHERE filename = ?2",
+            params![&newid, &oldid],
         );
         if ret.is_err() {
             log::error!("Failed to update candidate {}!", oldid);
@@ -307,7 +576,11 @@ impl VideoStore {
     }
 
     /// Find all similar screenshots for a single screenshot
-    fn search_matches(&self, client: &mut postgres::Client, hash: &crate::hash::Hash) -> crate::videomatches::VideoMatches {
+    fn search_matches(
+        &self,
+        client: &mut rusqlite::Connection,
+        hash: &crate::hash::Hash,
+    ) -> crate::videomatches::VideoMatches {
         let mut ms = crate::videomatches::VideoMatches::new();
         // build a mapping of video, screenshot to a global image index
         if self.num_candidates == 0 {
@@ -315,23 +588,31 @@ impl VideoStore {
         }
         let mut video_screenshot_to_score_map = Vec::new();
         let mut scoreid_to_video_screenshot_map = Vec::new();
-        let mut sindex: usize = 0;
-        for video_id in 0..self.num_candidates {
-            let candidate = self.return_candidate(client, video_id);
+        let mut video_ids = std::collections::BTreeMap::new();
+        let mut screenshot_index_global: usize = 0;
+        for video_id in 1..self.num_candidates + 1 {
+            let (candidate_id, candidate) = self.return_candidate(client, video_id);
+            let video_pos = video_screenshot_to_score_map.len();
+            video_ids.insert(candidate.index, candidate_id as usize);
             video_screenshot_to_score_map.push(Vec::new());
-            for screenshot_id in 0..candidate.screenshots.len() {
-                video_screenshot_to_score_map[video_id as usize].push(sindex);
-                scoreid_to_video_screenshot_map.push(ScreenshotIndex::from(&candidate.id, video_id, screenshot_id as u32, candidate.runtime));
-                sindex += 1;
+            for screenshot_pos in 0..candidate.screenshots.len() {
+                video_screenshot_to_score_map[video_pos].push(screenshot_index_global);
+                scoreid_to_video_screenshot_map.push(ScreenshotIndex::from(
+                    &candidate.id,
+                    video_id,
+                    screenshot_pos as u32 + 1,
+                    candidate.runtime,
+                ));
+                screenshot_index_global += 1;
             }
         }
         // prepare the scoring vector where we can rate any existing screenshot
         let mut scores: Vec<f64> = Vec::new();
-        scores.reserve(sindex);
-        for _ in 0..sindex {
+        scores.reserve(screenshot_index_global);
+        for _ in 0..screenshot_index_global {
             scores.push(f64::NAN);
         }
-        
+
         // Examine hash buckets.
         for coefindex in 0..hash.matrix.coefs.len() {
             let coef = &hash.matrix.coefs[coefindex];
@@ -360,84 +641,103 @@ impl VideoStore {
                 if colorcoef < 0.0 {
                     sign = 1;
                 }
-                let location = sign * IMAGESCALE *IMAGESCALE * crate::haar::COLOURCHANNELS 
-                                    + coefindex as u32 * crate::haar::COLOURCHANNELS + colorindex as u32;
+                let location = sign * IMAGESCALE * IMAGESCALE * crate::haar::COLOURCHANNELS
+                    + coefindex as u32 * crate::haar::COLOURCHANNELS
+                    + colorindex as u32 + 1;
                 let arr = &self.return_indice(client, location);
                 for i in 0..arr.len() {
                     let matchscreenshot = arr[i].clone();
-                    if matchscreenshot.video_id as usize > video_screenshot_to_score_map.len() - 1  
-                        || video_screenshot_to_score_map[matchscreenshot.video_id as usize].len() == 0 {
-                            log::error!("Failed to lookup the video screenshot index");
-                            return ms;
+                    if !video_ids.contains_key(&matchscreenshot.video_id) {
+                        continue;
                     }
-                    let sindex = video_screenshot_to_score_map[matchscreenshot.video_id as usize][matchscreenshot.screenshot_id as usize];
-                    if scores[sindex].is_nan() {
+                    let video_pos = video_ids[&matchscreenshot.video_id];
+                    if video_pos >= video_screenshot_to_score_map.len()
+                        || video_screenshot_to_score_map[video_pos].len()
+                            == 0
+                    {
+                        //log::error!("Search Matches failed to lookup the video position {} by its Index {}", video_pos, matchscreenshot.video_id);
+                        return ms;
+                    }
+                    if matchscreenshot.screenshot_id < 1 {
+                        continue;
+                    }
+                    let screenshot_pos = matchscreenshot.screenshot_id as usize - 1;
+                    if screenshot_pos >= video_screenshot_to_score_map[video_pos].len() {
+                        continue;
+                    }
+                    let screenshot_index_global = video_screenshot_to_score_map[video_pos][screenshot_pos];
+                    if scores[screenshot_index_global].is_nan() {
                         // calculated initial score
-                        let mut score: f64  = 0.0;
+                        let mut score: f64 = 0.0;
                         for colorid in 0..coef.c.len() {
                             score += WEIGHTS[colorid][0];
                         }
-                        scores[sindex] = score;
+                        scores[screenshot_index_global] = score;
                     }
                     // At this point, we have an entry in matches. Simply subtract the
                     // corresponding weight.
-                    scores[sindex as usize] -= WEIGHTSUMS[bin];
+                    scores[screenshot_index_global] -= WEIGHTSUMS[bin];
                 }
             }
         }
         // Create matches. If the dhash_distance is lower than the sensitivity threshold it is a *valid* match.
         for index in 0..scores.len() {
             if !scores[index].is_nan() {
+                if scores[index] > self.sensitivity {
+                    continue;
+                }
                 let mut m = crate::videomatches::VideoMatch::new();
                 let video_id = scoreid_to_video_screenshot_map[index].video_id;
                 let screenshot_id = scoreid_to_video_screenshot_map[index].screenshot_id;
-                let candidate = self.return_candidate(client, video_id);
+                let (_, candidate) = self.return_candidate(client, video_id);
+                log::warn!("Found Match {}", candidate.id);
                 m.id = candidate.id.clone();
                 m.video_id = video_id;
                 m.screenshot_id = screenshot_id;
-                let screenshot = candidate.screenshots[screenshot_id as usize].clone();
+                let screenshot_pos = screenshot_id as usize - 1;
+                let screenshot = candidate.screenshots[screenshot_pos].clone();
                 m.timecode = screenshot.timecode;
                 m.score = scores[index];
                 m.ratio_diff = screenshot.hash.ratio.log(10.0).abs() - hash.ratio.log(10.0);
-                m.dhash_distance = crate::hamming::hamming_distance(
-                                        screenshot.hash.dhash[0], hash.dhash[0])
-                                             + crate::hamming::hamming_distance(
-                                            screenshot.hash.dhash[1], hash.dhash[1]);
-                m.histogram_distance = crate::hamming::hamming_distance(
-                    screenshot.hash.histogram, hash.histogram);
+                m.dhash_distance =
+                    crate::hamming::hamming_distance(screenshot.hash.dhash[0], hash.dhash[0])
+                        + crate::hamming::hamming_distance(screenshot.hash.dhash[1], hash.dhash[1]);
+                m.histogram_distance =
+                    crate::hamming::hamming_distance(screenshot.hash.histogram, hash.histogram);
                 if m.score < self.sensitivity {
-                    ms.m.push(m);                
+                    ms.m.push(m);
                 }
             }
         }
         // sort the vector so the first match is the one with the lowest value --> the best match
         // The number of matches should be small, so the bubble sort is about the fastest algorithm.
         ms.sort();
-        ms    
+        ms
     }
 
     /// create a score value for a *similar* video in comparison to duration, resulution. ...
     /// and return a Match
-    fn rate_match(&self, 
-        client: &mut postgres::Client, 
-        matches: &crate::videomatches::VideoMatches, 
-        new_video: &crate::videocandidate::VideoCandidate, 
-        match_id: u32, 
-        num_matches: usize
-    ) -> crate::videomatches::VideoMatch 
-    {
+    fn rate_match(
+        &self,
+        client: &mut rusqlite::Connection,
+        matches: &crate::videomatches::VideoMatches,
+        new_video: &crate::videocandidate::VideoCandidate,
+        match_id: u32,
+        num_matches: usize,
+    ) -> crate::videomatches::VideoMatch {
         let mut m = crate::videomatches::VideoMatch::new();
-         for i in 0..matches.m.len() {
+        for i in 0..matches.m.len() {
             if matches.m[i].video_id == match_id {
                 let matchedvideo = matches.m[i].clone();
                 m.id = matchedvideo.id.clone();
                 m.video_id = matchedvideo.video_id;
                 m.screenshot_id = matchedvideo.screenshot_id;
                 m.timecode = matchedvideo.timecode;
-                let matched = self.return_candidate(client, match_id);
+                let (_, matched) = self.return_candidate(client, match_id);
                 m.score = -60.0                                                                            // base value
                             - 100.0 * (num_matches as f64 * 10.0) / matched.runtime as f64                 // the longer the similar part, the better the match
-                            + ((new_video.width - matched.width) * (new_video.width - matched.width)) as f64 // if the resolution is higher the match gets better
+                            + ((new_video.width - matched.width) * (new_video.width - matched.width)) as f64
+                // if the resolution is higher the match gets better
             }
         }
 
@@ -447,28 +747,35 @@ impl VideoStore {
     /// Query performs a similarity search on the given image hashes and returns
     /// all potential matches. The returned slice will sort the match with the best score as its
     /// first element.
-    /// 
-    /// Videos consist of one screenshot every ten seconds. 
-    /// A Match contains a portion of at least a miunte (six similar screenshots in a row)
+    ///
+    /// Videos consist of one screenshot every ten seconds.
+    /// A Match contains a portion of at least a minute (six similar screenshots in a row)
     /// The longer the sequence the better the match.
-    /// 
-    pub fn query(&self, client: &mut postgres::Client, video: &crate::videocandidate::VideoCandidate) -> crate::videomatches::VideoMatches {
+    ///
+    pub fn query(
+        &self,
+        client: &mut rusqlite::Connection,
+        video: &crate::videocandidate::VideoCandidate,
+    ) -> crate::videomatches::VideoMatches {
         let mut ms = crate::videomatches::VideoMatches::new();
         if self.num_candidates == 0 {
             return ms;
         }
         let mut sequences = std::collections::BTreeMap::new();
         let mut active_sequence_counter = std::collections::BTreeMap::new();
-        
+
         // search for each screenshot of the current video in the store
-        for screenshot_id in 0..video.screenshots.len() {
-            let hash = &video.screenshots[screenshot_id].hash;
+        for screenshot_pos in 0..video.screenshots.len() {
+            let hash = &video.screenshots[screenshot_pos].hash;
             let matches = self.search_matches(client, hash);
             let mut previous_videos = std::collections::BTreeSet::new();
             for (key, _) in sequences.iter() {
                 previous_videos.insert(*key);
             }
-            let mut new_videos = std::collections::BTreeSet::new();
+            let mut new_videos= std::collections::BTreeSet::new();
+            if screenshot_pos % 30 == 0 {
+                log::warn!("Comparing new video with the databse. Currently at position {} Minutes into the video", (screenshot_pos / 6) as u32);
+            }
             for i in 0..matches.len() {
                 let video_id = matches.m[i].video_id;
                 new_videos.insert(video_id);
@@ -484,7 +791,7 @@ impl VideoStore {
                     sequences.insert(video_id, Vec::from([screenshot_id]));
                 } else {
                     if let Some(x) = sequences.get_mut(&video_id) {
-                        if x[x.len()-1] + 1 == screenshot_id {
+                        if x[x.len() - 1] + 1 == screenshot_id {
                             x.push(screenshot_id);
                             break;
                         } else {
@@ -501,7 +808,8 @@ impl VideoStore {
             for id in dropped_videos {
                 // check if the sequence was longer than a minute amd add the ones long enough
                 if sequences[id].len() > 5 {
-                    let videomatch = self.rate_match(client, &matches, &video, *id, sequences[id].len());
+                    let videomatch =
+                        self.rate_match(client, &matches, &video, *id, sequences[id].len());
                     if videomatch.id.len() != 0 {
                         ms.m.push(videomatch);
                     }
@@ -509,7 +817,6 @@ impl VideoStore {
                 sequences.remove(id);
             }
             new_videos.clear();
-            
         }
         // done parsing, add everything with more than 5 matches in a row to the list
         for (video_id, v) in sequences {
@@ -517,7 +824,7 @@ impl VideoStore {
             if v.len() > 5 {
                 let mut m = crate::videomatches::VideoMatch::new();
 
-                let matchedvideo = self.return_candidate(client, video_id);
+                let (_, matchedvideo) = self.return_candidate(client, video_id);
                 m.id = matchedvideo.id.clone();
                 m.video_id = matchedvideo.index;
                 m.screenshot_id = 0;
@@ -534,30 +841,127 @@ impl VideoStore {
         ms
     }
 
-    pub fn return_candidate(&self, client: &mut postgres::Client, video_id: u32) -> crate::videocandidate::VideoCandidate {
+    pub fn return_candidate(
+        &self,
+        connection: &mut rusqlite::Connection,
+        video_id: u32,
+    ) -> (u32, crate::videocandidate::VideoCandidate) {
         let mut v = crate::videocandidate::VideoCandidate::new();
-        let row_opt = client.query("SELECT blob FROM duplo_rs.videostore_candidates WHERE video_id = $1", &[&video_id]);
-        if row_opt.is_ok() {
-            for row in row_opt.unwrap() {
-                let blob: Vec<u8> = row.get(0);
-                let mut from = std::io::Cursor::new(blob);
-                v.decode(&mut from);
+        let mut candidate_id = 0;
+        let query = "SELECT candidate_id, data FROM videostore_candidates WHERE video_id = ?1";
+        match connection.prepare(query) {
+            Ok(mut statement) => {
+                match statement.query(params![&video_id]) {
+                    Ok(mut rows) => {
+                        loop {
+                            match rows.next() {
+                                Ok(Some(row)) => {
+                                    match row.get(0) {
+                                        Ok(s) => {
+                                            candidate_id = s;
+                                        },
+                                        Err(error) => {
+                                            log::error!("Failed to read candiate_id for video: {}", error);
+                                            continue;
+                                        }
+                                    }
+                                    match row.get(1) {
+                                        Ok(s) => {
+                                            let blob: Vec<u8> = s;
+                                            v.decode(&mut std::io::Cursor::new(blob));
+                                        },
+                                        Err(error) => {
+                                            log::error!("Failed to read binary data for video: {}", error);
+                                            continue;
+                                        }
+                                    }
+                                },
+                                Ok(None) => {
+                                    //log::warn!("No data read from candidates.");
+                                    break;
+                                },
+                                Err(error) => {
+                                    log::error!("Failed to read a row from candidates: {}", error);
+                                    break;
+                                }
+                            }
+                        }
+                    },
+                    Err(err) => {
+                        log::error!("could not read line from videostore_candidates database: {}", err);
+                    }
+                }
+            },
+            Err(err) => {
+                log::error!("could not prepare SQL statement: {}", err);
             }
         }
-        v
+        (candidate_id, v)
     }
 
-    pub fn return_indice(&self, client: &mut postgres::Client, location: u32) -> Vec<ScreenshotIndex> {
+    pub fn return_indice(
+        &self,
+        connection: &mut rusqlite::Connection,
+        location: u32,
+    ) -> Vec<ScreenshotIndex> {
         let mut v = Vec::new();
-        let row_opt = client.query("SELECT filename, video_id, screenshot_id, runtime FROM duplo_rs.videostore_indices WHERE location = $1", &[&location]);
-        if row_opt.is_ok() {
-            for row in row_opt.unwrap() {
-                let mut s = ScreenshotIndex::new();
-                s.id = row.get(0);
-                s.video_id = row.get(1);
-                s.screenshot_id = row.get(2);
-                s.runtime = row.get(3);
-                v.push(s);
+        let query = "SELECT filename, video_id, screenshot_id, runtime FROM videostore_indices WHERE location = ?1";
+        match connection.prepare(query) {
+            Ok(mut statement) => {
+                match statement.query(params![&location]) {
+                    Ok(mut rows) => {
+                        loop {
+                            match rows.next() {
+                                Ok(Some(row)) => {
+                                    let mut s = ScreenshotIndex::new();
+                                    match row.get(0) {
+                                        Ok(val) => s.id = val,
+                                        Err(error) => {
+                                            log::error!("Failed to read id for video: {}", error);
+                                            continue;
+                                        }
+                                    }
+                                    match row.get(1) {
+                                        Ok(val) => s.video_id = val,
+                                        Err(error) => {
+                                            log::error!("Failed to read video_id for video: {}", error);
+                                            continue;
+                                        }
+                                    }
+                                    match row.get(2) {
+                                        Ok(val) => s.screenshot_id = val,
+                                        Err(error) => {
+                                            log::error!("Failed to read screenshot_id for video: {}", error);
+                                            continue;
+                                        }
+                                    }
+                                    match row.get(3) {
+                                        Ok(val) => s.runtime = val,
+                                        Err(error) => {
+                                            log::error!("Failed to read runtime for video: {}", error);
+                                            continue;
+                                        }
+                                    }
+                                    v.push(s);
+                                },
+                                Ok(None) => {
+                                    //log::warn!("No data read from indices.");
+                                    break;
+                                },
+                                Err(error) => {
+                                    log::error!("Failed to read a row from indices: {}", error);
+                                    break;
+                                }
+                            }
+                        }
+                    },
+                    Err(err) => {
+                        log::error!("could not read line from videostore_indices database: {}", err);
+                    }
+                }
+            },
+            Err(err) => {
+                log::error!("could not prepare SQL statement: {}", err);
             }
         }
         v
@@ -571,35 +975,13 @@ impl VideoStore {
         self.modified
     }
 
-    pub fn connect(&self, server: &str, username: &str, password: &str) -> Result<postgres::Client, postgres::Error> {
-        match Client::connect(&format!("postgresql://{}:{}@{}", username, password, server), NoTls) {
-            Ok(mut client) => {
-                match client.execute("CREATE SCHEMA IF NOT EXISTS duplo_rs;", &[]) {
-                    Ok(_res) => {},
-                    Err(error) => return Err(postgres::Error::from(error)),
-                }
-
-                match client.execute("CREATE TABLE IF NOT EXISTS duplo_rs.videostore_candidate (index bigserial, filename character varying [ (n) ], video_id bigserial, data bytea, CONSTRAINT filename_videoid PRIMARY KEY(filename,video_id));", &[]) {
-                    Ok(_res) => {},
-                    Err(error) => return Err(postgres::Error::from(error)),
-                }
-                match client.execute("CREATE TABLE IF NOT EXISTS duplo_rs.videostore_indices (location bigserial PRIMARY KEY, arrayindex bigserial, filename character varying [ (n) ], video_id bigserial, screenshot_id bigserial, runtime bigserial);", &[]) {
-                    Ok(_res) => {},
-                    Err(error) => return Err(postgres::Error::from(error)),
-                }
-                
-                return Ok(client);
-            },
-            Err(error) => return Err(postgres::Error::from(error)),
-        }       
-    }
-
     // encode the data structure to binary stream
     pub fn encode(&self, to: &mut Vec<u8>) {
         crate::marshal::store_u32(self.num_candidates, to);
         crate::marshal::store_hash_string_usize(&self.ids, to);
         crate::marshal::store_hash_u32_usize(&self.video_ids, to);
         crate::marshal::store_hash_u32_usize(&self.num_indices, to);
+        crate::marshal::store_u32(self.num_index_values, to);
         crate::marshal::store_f64(self.sensitivity, to);
         crate::marshal::store_bool(self.modified, to);
     }
@@ -607,9 +989,13 @@ impl VideoStore {
     // decode data structure from binary stream
     pub fn decode(&mut self, from: &mut std::io::Cursor<Vec<u8>>) {
         self.num_candidates = crate::marshal::restore_u32(from);
-        self.ids.extend(crate::marshal::restore_hash_string_usize(from));
-        self.video_ids.extend(crate::marshal::restore_hash_u32_usize(from));
-        self.num_indices.extend(crate::marshal::restore_hash_u32_usize(from));
+        self.ids
+            .extend(crate::marshal::restore_hash_string_usize(from));
+        self.video_ids
+            .extend(crate::marshal::restore_hash_u32_usize(from));
+        self.num_indices
+            .extend(crate::marshal::restore_hash_u32_usize(from));
+        self.num_index_values = crate::marshal::restore_u32(from);
         self.sensitivity = crate::marshal::restore_f64(from);
         self.modified = crate::marshal::restore_bool(from);
         self.modified = false;
@@ -640,7 +1026,7 @@ impl VideoStore {
     }
 
     // read binary stream from file
-    pub fn slurp_binary(&mut self, storefile: &str, client: &mut postgres::Client) {
+    pub fn slurp_binary(&mut self, storefile: &str, client: &mut rusqlite::Connection) {
         let path = std::path::Path::new(&storefile);
         let display = path.display();
         let mut input_file = match std::fs::File::open(&path) {
@@ -667,6 +1053,123 @@ impl VideoStore {
             }
         }
     }
-
 }
 
+/// Make a connection to the database
+/// This requires a running PostgreSQL server.
+/// Also there has to be a valid user and a Database / Schema.
+/// 
+pub fn connect(
+    dbpath: &str,
+) -> Result<rusqlite::Connection, rusqlite::Error> {
+    let path = std::path::Path::new(dbpath);
+    let connection;
+    if !path.is_file() {
+        connection = Connection::open(dbpath)?;
+        println!("{}", connection.is_autocommit());
+        match connection.execute(
+            "CREATE TABLE videostore_candidates (
+                candidate_id UNSIGNED BIG INT PRIMARY KEY NOT NULL,
+                filename TEXT NOT NULL unique, 
+                video_id UNSIGNED BIG INT NOT NULL, 
+                data BLOB
+            )", (),
+        ) {
+            Ok(_ret) => {},
+            Err(error) => {
+                log::error!("Failed to create table candidates: {}", error);
+                return Err(error);
+            }
+        }
+        match connection.execute(
+            "CREATE INDEX index_videostore_candidates_filename ON videostore_candidates (filename)", (),
+        ) {
+            Ok(_ret) => {},
+            Err(error) => {
+                log::error!("Failed to create index on candidates: {}", error);
+                return Err(error);
+            }
+        }
+        match connection.execute(
+            "CREATE INDEX index_videostore_candidat_video_id ON videostore_candidates (video_id)", (),
+        ) {
+            Ok(_) => {},
+            Err(error) => {
+                log::error!("Failed to create index on candidates: {}", error);
+                return Err(error);
+            }
+        }
+        match connection.execute("
+            CREATE TABLE videostore_indices (
+                index_id UNSIGNED BIG INT PRIMARY KEY NOT NULL, 
+                location UNSIGNED BIG INT NOT NULL, 
+                arrayindex UNSIGNED BIG INT NOT NULL, 
+                filename TEXT NOT NULL, 
+                video_id UNSIGNED BIG INT NOT NULL, 
+                screenshot_id UNSIGNED BIG INT NOT NULL, 
+                runtime UNSIGNED BIG INT NOT NULL
+            )", [],
+        ) {
+            Ok(_ret) => {},
+            Err(error) => {
+                log::error!("Failed to create table indices: {}", error);
+                return Err(error);
+            }
+        }
+        match connection.execute(
+            "CREATE INDEX index_videostore_indices_location ON videostore_indices (filename)", (),
+        ) {
+            Ok(_ret) => {},
+            Err(error) => {
+                log::error!("Failed to create index on indices: {}", error);
+                return Err(error);
+            }
+        }
+        match connection.execute(
+            "CREATE INDEX index_videostore_indices_filename ON videostore_indices (filename)", (),
+        ) {
+            Ok(_ret) => {},
+            Err(error) => {
+                log::error!("Failed to create index on indices: {}", error);
+                return Err(error);
+            }
+        }
+        match connection.execute(
+            "CREATE INDEX index_videostore_indices_video_id ON videostore_indices (video_id)", (),
+        ) {
+            Ok(_ret) => {},
+            Err(error) => {
+                log::error!("Failed to create index on indices: {}", error);
+                return Err(error);
+            }
+        }
+        match connection.execute("
+            CREATE TABLE videostore_parameters (
+                config_id UNSIGNED BIG INT PRIMARY KEY NOT NULL, 
+                sensitivity BIGINT, 
+                start_directory TEXT, 
+                num_threads UNSIGNED BIG INT
+            )", [],
+        ) {
+            Ok(_ret) => {},
+            Err(error) => {
+                log::error!("Failed to create table parameters: {}", error);
+                return Err(error);
+            }
+        }
+        match connection.execute(
+            "INSERT INTO videostore_parameters (config_id, sensitivity, start_directory, num_threads) VALUES (?1, ?2, ?3, ?4)",
+            params![&1, &-60, &"./", &2],
+        ) {
+            Ok(retval) => log::warn!("Inserted {} data into parameter.", retval),
+            Err(error) => {
+                log::error!("Failed to insert data into parameter database: {}", error);
+                return Err(error);
+            }
+        }
+
+    } else {
+        connection = Connection::open(dbpath)?;
+    }
+    Ok(connection)
+}

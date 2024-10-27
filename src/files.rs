@@ -1,9 +1,9 @@
 use rand::Rng;
+use regex::Regex;
+use std::ffi::OsStr;
 use std::fs;
 use std::iter;
 use std::path::PathBuf;
-use std::ffi::OsStr;
-use regex::Regex;
 use walkdir::WalkDir;
 
 const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -32,10 +32,13 @@ pub fn walk_dir_images(dirpath: &str) -> Vec<PathBuf> {
     let dir = ret.unwrap();
     for f in dir {
         if f.is_ok() {
-            let file = f.unwrap(); 
+            let file = f.unwrap();
             let filepathopt = file.path().canonicalize();
             if filepathopt.is_err() {
-                log::error!("Failed to make an absolute path for {}", file.path().display());
+                log::error!(
+                    "Failed to make an absolute path for {}",
+                    file.path().display()
+                );
                 return p;
             }
             let filepath = filepathopt.unwrap();
@@ -44,8 +47,15 @@ pub fn walk_dir_images(dirpath: &str) -> Vec<PathBuf> {
                 if e.is_some() {
                     let ext = e.unwrap();
                     let extstring = osstring_to_string(ext).to_ascii_lowercase();
-                    if extstring == "png" || extstring == "jpg" || extstring == "jpeg" || extstring == "bmp"
-                    || extstring == "gif" || extstring == "webp" || extstring == "tif" || extstring == "tiff" {
+                    if extstring == "png"
+                        || extstring == "jpg"
+                        || extstring == "jpeg"
+                        || extstring == "bmp"
+                        || extstring == "gif"
+                        || extstring == "webp"
+                        || extstring == "tif"
+                        || extstring == "tiff"
+                    {
                         p.push(filepath);
                     }
                 }
@@ -58,12 +68,16 @@ pub fn walk_dir_images(dirpath: &str) -> Vec<PathBuf> {
 pub fn walk_tree_images(dirpath: &str) -> Vec<PathBuf> {
     let mut p = Vec::new();
     for entry in WalkDir::new(dirpath)
-            .follow_links(true)
-            .into_iter()
-            .filter_map(|e| e.ok()) {
+        .follow_links(true)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         let filepathopt = entry.path().canonicalize();
         if filepathopt.is_err() {
-            log::error!("Failed to make an absolute path for {}", entry.path().display());
+            log::error!(
+                "Failed to make an absolute path for {}",
+                entry.path().display()
+            );
             return p;
         }
         let filepath = filepathopt.unwrap();
@@ -72,9 +86,16 @@ pub fn walk_tree_images(dirpath: &str) -> Vec<PathBuf> {
             if e.is_some() {
                 let ext = e.unwrap();
                 let extstring = osstring_to_string(ext).to_ascii_lowercase();
-                if extstring == "png" || extstring == "jpg" || extstring == "jpeg" || extstring == "bmp"
-                || extstring == "gif" || extstring == "webp" || extstring == "tif" || extstring == "tiff" {
-                p.push(filepath.into());
+                if extstring == "png"
+                    || extstring == "jpg"
+                    || extstring == "jpeg"
+                    || extstring == "bmp"
+                    || extstring == "gif"
+                    || extstring == "webp"
+                    || extstring == "tif"
+                    || extstring == "tiff"
+                {
+                    p.push(filepath.into());
                 }
             }
         }
@@ -91,10 +112,13 @@ pub fn walk_dir_videos(dirpath: &str) -> Vec<PathBuf> {
     let dir = ret.unwrap();
     for f in dir {
         if f.is_ok() {
-            let file = f.unwrap(); 
+            let file = f.unwrap();
             let filepathopt = file.path().canonicalize();
             if filepathopt.is_err() {
-                log::error!("Failed to make an absolute path for {}", file.path().display());
+                log::error!(
+                    "Failed to make an absolute path for {}",
+                    file.path().display()
+                );
                 return p;
             }
             let filepath = filepathopt.unwrap();
@@ -103,8 +127,12 @@ pub fn walk_dir_videos(dirpath: &str) -> Vec<PathBuf> {
                 if e.is_some() {
                     let ext = e.unwrap();
                     let extstring = osstring_to_string(ext).to_ascii_lowercase();
-                    if extstring == "mkv" || extstring == "mp4" || extstring == "avi" || extstring == "mov"
-                        || extstring == "webm" {
+                    if extstring == "mkv"
+                        || extstring == "mp4"
+                        || extstring == "avi"
+                        || extstring == "mov"
+                        || extstring == "webm"
+                    {
                         p.push(filepath);
                     }
                 }
@@ -117,12 +145,16 @@ pub fn walk_dir_videos(dirpath: &str) -> Vec<PathBuf> {
 pub fn walk_tree_videos(dirpath: &str) -> Vec<PathBuf> {
     let mut p = Vec::new();
     for entry in WalkDir::new(dirpath)
-            .follow_links(true)
-            .into_iter()
-            .filter_map(|e| e.ok()) {
+        .follow_links(true)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         let filepathopt = entry.path().canonicalize();
         if filepathopt.is_err() {
-            log::error!("Failed to make an absolute path for {}", entry.path().display());
+            log::error!(
+                "Failed to make an absolute path for {}",
+                entry.path().display()
+            );
             return p;
         }
         let filepath = filepathopt.unwrap();
@@ -131,8 +163,12 @@ pub fn walk_tree_videos(dirpath: &str) -> Vec<PathBuf> {
             if e.is_some() {
                 let ext = e.unwrap();
                 let extstring = osstring_to_string(ext).to_ascii_lowercase();
-                if extstring == "mkv" || extstring == "mp4" || extstring == "avi" || extstring == "mov"
-                    || extstring == "webm" {
+                if extstring == "mkv"
+                    || extstring == "mp4"
+                    || extstring == "avi"
+                    || extstring == "mov"
+                    || extstring == "webm"
+                {
                     p.push(filepath.into());
                 }
             }
@@ -157,9 +193,11 @@ pub fn process_image(p: &PathBuf) -> crate::hash::Hash {
     crate::hash::Hash::new()
 }
 
-pub fn find_similar_images(store: &crate::store::Store, id: &str, hash: &crate::hash::Hash) 
--> (crate::matches::Matches, String, crate::hash::Hash)
-{
+pub fn find_similar_images(
+    store: &crate::store::Store,
+    id: &str,
+    hash: &crate::hash::Hash,
+) -> (crate::matches::Matches, String, crate::hash::Hash) {
     let matches = store.query(&hash);
     (matches, id.to_string(), hash.clone())
 }
@@ -167,11 +205,18 @@ pub fn find_similar_images(store: &crate::store::Store, id: &str, hash: &crate::
 /// presents the two files together renamed to have the same prefix
 /// The file containing KEEP is a hard link. You can delete it without removing the original.
 /// The file containing REMOVE is the original file. If you delete it, it will be gone!
-pub fn present_pairs(destination_dir: &std::path::PathBuf, remove_candidate: &str, keep_candidate: &str) {
+pub fn present_pairs(
+    destination_dir: &std::path::PathBuf,
+    remove_candidate: &str,
+    keep_candidate: &str,
+) {
     if !destination_dir.is_dir() {
         let ret = std::fs::create_dir(destination_dir.as_path());
         if ret.is_err() {
-            log::error!("Unable to create the duplicates directory in {}!", destination_dir.display());
+            log::error!(
+                "Unable to create the duplicates directory in {}!",
+                destination_dir.display()
+            );
             std::process::exit(2);
         }
     }
@@ -179,11 +224,17 @@ pub fn present_pairs(destination_dir: &std::path::PathBuf, remove_candidate: &st
     let removefile_opt = std::path::Path::new(remove_candidate).file_name();
     let keepfile_opt = std::path::Path::new(remove_candidate).file_name();
     if removefile_opt.is_none() {
-        log::error!("Path {} does not contain a valid file name!", remove_candidate);
+        log::error!(
+            "Path {} does not contain a valid file name!",
+            remove_candidate
+        );
         return;
     }
     if keepfile_opt.is_none() {
-        log::error!("Path {} does not contain a valid file name!", keep_candidate);
+        log::error!(
+            "Path {} does not contain a valid file name!",
+            keep_candidate
+        );
         return;
     }
     let removefile_opt = removefile_opt.unwrap().to_str();
@@ -202,18 +253,27 @@ pub fn present_pairs(destination_dir: &std::path::PathBuf, remove_candidate: &st
     let keep_path = destination_dir.join(format!("{}_{}_{}", prefix, "KEEP", keepfile));
     let ret = std::fs::hard_link(keep_candidate, keep_path.clone());
     if ret.is_err() {
-        log::error!("Failed to create a hard link from {} to {}!", keep_candidate, keep_path.display());
+        log::error!(
+            "Failed to create a hard link from {} to {}!",
+            keep_candidate,
+            keep_path.display()
+        );
         return;
     }
     let ret = std::fs::rename(remove_candidate, remove_path.clone());
     if ret.is_err() {
-        log::error!("Failed to move a file from {} to {}!", remove_candidate, remove_path.display());
+        log::error!(
+            "Failed to move a file from {} to {}!",
+            remove_candidate,
+            remove_path.display()
+        );
         return;
     }
 }
 
 fn prepare_video_table(compare: &Vec<crate::videocandidate::VideoCandidate>) -> String {
-    let mut v = String::from("<table><thead>\n<tr><th>Video</th><th>Info</th></tr>\n</thead><tbody>\n");
+    let mut v =
+        String::from("<table><thead>\n<tr><th>Video</th><th>Info</th></tr>\n</thead><tbody>\n");
     for i in 0..compare.len() {
         let filepath = std::path::Path::new(&compare[i].id);
         let fileformat;
@@ -222,22 +282,43 @@ fn prepare_video_table(compare: &Vec<crate::videocandidate::VideoCandidate>) -> 
             let ext = e.unwrap();
             let extstring = osstring_to_string(ext).to_ascii_lowercase();
             if extstring == "mkv" || extstring == "webm" {
-                fileformat = "webm".to_string();
+                v = format!(
+                    r##"{}<tr><td><video controls width="320" src="{}"</video></td>"##,
+                    v, compare[i].id
+                );
             } else if extstring == "mp4" || extstring == "mpv" {
                 fileformat = "mp4".to_string();
+                v = format!(
+                    r##"{}<tr><td><video controls width="320"><source src="{}" type="video/{}" />/td>"##,
+                    v, compare[i].id, fileformat
+                );
             } else {
-                fileformat = "webm".to_string();
+                v = format!(
+                    r##"{}<tr><td><video controls width="320" src="{}"</video></td>"##,
+                    v, compare[i].id
+                );
             }
-            v = format!(r##"{}<tr><td><video controls width="320">\n<source src="{}" type="video/{}" />/td>"##, v, compare[i].id, fileformat);
-            v = format!(r##"{}<td><a href="{}">link</a>\n<p>Resolution: {}x{}</p>\n<p>Duration: {}</p></td></tr>\n"##, 
-                        v, compare[i].id, compare[i].width, compare[i].height, compare[i].runtime);
+            
+            v = format!(
+                r##"{}<td><a href="{}">{}</a><p>Resolution: {}x{}</p><p>Duration: {}</p></td></tr>"##,
+                v,
+                compare[i].id,
+                compare[i].id,
+                compare[i].width,
+                compare[i].height,
+                compare[i].runtime
+            );
         }
-        v = format!("{}</tbody></table>", v);
+        v = format!("{}\n", v);
     }
+    v = format!("{}\n</tbody></table>", v);
     v
 }
 
-pub fn present_video_matches(destination_dir: &std::path::PathBuf, compare: &Vec<crate::videocandidate::VideoCandidate>) {
+pub fn present_video_matches(
+    destination_dir: &std::path::PathBuf,
+    compare: &Vec<crate::videocandidate::VideoCandidate>,
+) {
     use build_html::*;
     use std::io::Write;
     if compare.len() < 2 {
@@ -247,18 +328,29 @@ pub fn present_video_matches(destination_dir: &std::path::PathBuf, compare: &Vec
     if basefile_opt.is_none() {
         return;
     }
+    if !destination_dir.is_dir() {
+        let ret = std::fs::create_dir(destination_dir.as_path());
+        if ret.is_err() {
+            log::error!(
+                "Unable to create the video matches directory in {}!",
+                destination_dir.display()
+            );
+            std::process::exit(2);
+        }
+    }
+
     let basefile = osstring_to_string(&basefile_opt.unwrap());
     let title = format!("Comparing similar videos for {}", basefile);
     let table = prepare_video_table(compare);
     let html = build_html::HtmlPage::new()
-    .with_title(&title)
-    .with_header(1, &title)
-    .with_html(
-        HtmlElement::new(HtmlTag::Table)
-            .with_attribute("id", "Matches")
-            .with_paragraph(&table)
-    )
-    .to_html_string();
+        .with_title(&title)
+        .with_header(1, &title)
+        .with_html(
+            HtmlElement::new(HtmlTag::Table)
+                .with_attribute("id", "Matches")
+                .with_paragraph(&table),
+        )
+        .to_html_string();
     let storefile = destination_dir.join(format!("{}.html", basefile));
     let path = std::path::Path::new(&storefile);
     let display = path.display();
@@ -278,9 +370,8 @@ pub fn present_video_matches(destination_dir: &std::path::PathBuf, compare: &Vec
             &storefile.display()
         )
     }
+}
 
-}    
-    
 struct VideoMetadata {
     duration: u32,
     width: u32,
@@ -295,7 +386,7 @@ impl Default for VideoMetadata {
             width: 0,
             height: 0,
             framerate: 0.0,
-       }
+        }
     }
 }
 
@@ -328,14 +419,19 @@ pub fn string_to_float(mystring: &str) -> f32 {
 }
 
 fn video_metadata(filepath: &str) -> VideoMetadata {
-    let mut meta = VideoMetadata {..Default::default()};
+    let mut meta = VideoMetadata {
+        ..Default::default()
+    };
     let ffmpeg_output = std::process::Command::new("ffmpeg")
         .args(["-i", filepath])
         .output()
         .expect("failed to execute process");
     match String::from_utf8(ffmpeg_output.stderr) {
         Ok(message) => {
-            let re_duration = Regex::new(r"(?i)\s*Duration:\s+(?P<hours>\d+):(?P<minutes>\d+):(?P<seconds>\d+).\d+\s*,").unwrap();
+            let re_duration = Regex::new(
+                r"(?i)\s*Duration:\s+(?P<hours>\d+):(?P<minutes>\d+):(?P<seconds>\d+).\d+\s*,",
+            )
+            .unwrap();
             if re_duration.is_match(&message) {
                 let caps = re_duration.captures(&message).unwrap();
                 let hours = string_to_uint(&caps["hours"]);
@@ -343,14 +439,15 @@ fn video_metadata(filepath: &str) -> VideoMetadata {
                 let seconds = string_to_uint(&caps["seconds"]);
                 meta.duration = hours * 3600 + minutes * 60 + seconds;
             }
-            let re_video = Regex::new(r"(?i), (?P<width>\d+)x(?P<height>\d+).*, (?P<fps>\d+) fps").unwrap();
+            let re_video =
+                Regex::new(r"(?i), (?P<width>\d+)x(?P<height>\d+).*, (?P<fps>\d+) fps").unwrap();
             if re_video.is_match(&message) {
                 let caps = re_video.captures(&message).unwrap();
                 meta.width = string_to_uint(&caps["width"]);
                 meta.height = string_to_uint(&caps["height"]);
                 meta.framerate = string_to_float(&caps["fps"]);
             }
-        },
+        }
         Err(error) => log::error!("Error: {}", error),
     }
 
@@ -358,19 +455,19 @@ fn video_metadata(filepath: &str) -> VideoMetadata {
 }
 
 fn create_screenshots(
-    filepath: &str, 
+    filepath: &str,
     video_id: u32,
     num_videos: u32,
-) -> Result<(Vec<crate::videocandidate::Screenshot>, VideoMetadata), image::ImageError>  {
+) -> Result<(Vec<crate::videocandidate::Screenshot>, VideoMetadata), image::ImageError> {
     let mut v = Vec::new();
 
     let meta = video_metadata(filepath);
-    let mut screenshot_id: usize = 0;
+    let mut screenshot_id: usize = 1;
     let mut timecode: u32 = 10;
     let outputpattern = format!("{}_%03d.jpeg", filepath);
     let output = format!("{}_001.jpeg", filepath);
     let outputpath = std::path::Path::new(&output);
-    while timecode  < meta.duration {
+    while timecode < meta.duration {
         let time = timecode_to_ffmpeg_time(timecode);
         if outputpath.is_file() {
             let ret = std::fs::remove_file(&output);
@@ -380,18 +477,36 @@ fn create_screenshots(
         }
 
         let ffmpeg_output = std::process::Command::new("ffmpeg")
-            .args(["-ss", &time, "-i", filepath, "-frames:v", "1", "-q:v", "2", &outputpattern])
+            .args([
+                "-ss",
+                &time,
+                "-i",
+                filepath,
+                "-frames:v",
+                "1",
+                "-q:v",
+                "2",
+                &outputpattern,
+            ])
             .output()
             .expect("failed to execute process");
         match String::from_utf8(ffmpeg_output.stderr) {
-            Ok(_message) => log::warn!("Processing video {} of {} path {} timecode {}", video_id + 1, num_videos, filepath, time),
+            Ok(_message) => log::warn!(
+                "Processing video {} of {} path {} timecode {}",
+                video_id + 1,
+                num_videos,
+                filepath,
+                time
+            ),
             Err(error) => log::error!("Error: {}", error),
         }
         if !outputpath.is_file() {
-            log::error!("Failed to create screenshot");
+            log::error!("Failed to create screenshot: {}", format!("ffmpeg -ss {} -i {} -frames:v 1 -q:v 2 ", time, filepath));
+            log::error!("File {} seems to be defective from position {}%", filepath, timecode / meta.duration * 100);
+            break;
         }
         let res = image::ImageReader::open(outputpath);
-        if res.is_ok() {       
+        if res.is_ok() {
             let dynimg = res.unwrap().decode();
             if dynimg.is_err() {
                 return Ok((v, meta));
@@ -427,16 +542,17 @@ fn timecode_to_ffmpeg_time(timecode: u32) -> String {
     format!("{:02}:{:02}:{:02}.000", hours, minutes, seconds)
 }
 
-/// reads a video file, creating screenshots every 10 seconds, 
-/// creates a hash for each screenshot 
+/// reads a video file, creating screenshots every 10 seconds,
+/// creates a hash for each screenshot
 /// and compares it with the hashes of screenshots of existing videos.
 /// Delivers existing Matches and the new data structure back to the calling program.
-pub fn process_video(path: &PathBuf, video_id: usize, num_videos: u32) 
--> crate::videocandidate::VideoCandidate 
-{
+pub fn process_video(
+    path: &PathBuf,
+    video_id: usize,
+    num_videos: u32,
+) -> crate::videocandidate::VideoCandidate {
     let id = osstring_to_string(path.as_os_str());
-    let mut video = crate::videocandidate::VideoCandidate::from(
-                &id, video_id);
+    let mut video = crate::videocandidate::VideoCandidate::from(&id, video_id);
 
     match create_screenshots(&id, video.index, num_videos) {
         Ok((v, meta)) => {
@@ -447,20 +563,27 @@ pub fn process_video(path: &PathBuf, video_id: usize, num_videos: u32)
             for ss in v {
                 video.screenshots.push(ss);
             }
+            // correct the runtime if the last screenshots could not be read ( possibly defective video )
+            let screentime = video.screenshots.len() as u32 * 10;
+            if video.runtime - screentime > 10 {
+                video.runtime = screentime + 5;
+            }
         }
-        Err(error) => log::error!("error: {}", error),
+        Err(error) => log::error!("Failed to create screenshots for {}: {}", path.display(), error),
     }
     video
 }
 
 pub fn find_similar_videos(
-    store: &crate::videostore::VideoStore, 
-    client: &mut postgres::Client, 
-    id: &str, 
-    video: &crate::videocandidate::VideoCandidate) 
--> (crate::videomatches::VideoMatches, String, crate::videocandidate::VideoCandidate)
-{
+    store: &crate::videostore::VideoStore,
+    client: &mut rusqlite::Connection,
+    id: &str,
+    video: &crate::videocandidate::VideoCandidate,
+) -> (
+    crate::videomatches::VideoMatches,
+    String,
+    crate::videocandidate::VideoCandidate,
+) {
     let matches = store.query(client, video);
     (matches, id.to_string(), video.clone())
 }
-
