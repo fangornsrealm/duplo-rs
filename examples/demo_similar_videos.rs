@@ -16,21 +16,29 @@ use std::thread;
 ///
 /// Dependencies:
 /// ffmpeg needs to be installed and in the path for executables. No development packages required.
-/// PostgeSQL database engine installed and running. A valid username and password needs to be provided, as demonstrated below.
 ///
-/// The data for all the screenshots is too large to keep all the data in RAM.
+/// The derived data from all the screenshots is too large to keep all the data in RAM.
 /// Depending on the length of the videos even 96 GB of RAM will be filled with around 1000 videos.
-/// The data blobs and the indices are stored in a PostgreSQL database.
-/// The part that is stored in RAM is dumped to a binary file every time a change to the database has happened.
+/// The data blobs and the indices are stored in a SQLite database.
+/// 1 TB of storage will suffice for 10 000 to 15 000 videos, depending on the length.
+/// 
+/// The search for similar videos in the database has to be done one by one.
+/// The speed is severely limited. Each new video will be compared screenshot by screenshot. 
+/// A rough estimate is thirty seconds per screenshot or fifteen minutes for five minutes of video!
+/// This is a trade-off between the running time and the quality of similar video detection.
+/// This demo app rests solely on the precision side of the evaluation.
+/// Outside of Music or TikTok videos scenes are longer than 10 seconds. So the probability to find a similar frame in a modified video is good.
+/// A screenshot every five minutes would be much faster and use 30x less resources, but only find the same file that has been cut in the end.
+/// 
 /// You can stop a scan at any time. Any video that has already been parsed will not be parsed again.
 /// It's data will be deleted if the file is no longer available.
 ///
 /// It can happen that it finds similarities that you will not see as such.
 /// If you want to decrease the sensitivity you can specify a value between 0 and 100 which will decrease the number of found similar images.
 ///
-/// To enable you to check it creates a directory "duplicates" that contains a HTML file per video for which similar videos were found.
+/// To enable you to check it creates a directory "similar_videos" that contains a HTML file per video for which similar videos were found.
 /// Each HTML file contains a preview of the new file on top and any previous read videos who have at least a minute of similar video.
-/// The file path and video metadata are given for each file.
+/// The file path and video metadata are given for each file. The HTML file works for Chromium based browsers. MP4 files also work in Firefox.
 ///
 pub fn main() {
     let mut logfile = "demo_similar_videos.txt".to_string();
@@ -39,7 +47,7 @@ pub fn main() {
 
     let curdir = std::env::current_dir().unwrap().as_os_str().to_owned();
     let mut directory = duplo_rs::files::osstring_to_string(&curdir);
-    let mut num_threads = 1;
+    let num_threads = 1;
     let matches = command!() // requires `cargo` feature
         .arg(Arg::new("logfile").short('l').long("log"))
         .arg(Arg::new("directory").short('d').long("directory"))
@@ -136,6 +144,7 @@ pub fn main() {
             
             for _ in 0..store.num_threads {
                 if filepos + 1 > num_videos {
+                    progressbar.finish();
                     break 'outer;
                 }
 
@@ -190,6 +199,7 @@ pub fn main() {
             }
         }
     }
+    progressbar.finish();
 }
 
 fn parallel_processor(
