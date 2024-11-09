@@ -88,10 +88,12 @@ if sql_client_opt.is_ok() {
         sensitivity,
         &directory,
         num_threads,
+        num_seconds_between_screenshots,
+        min_similar_screenshots_in_sequence,
     );
 }
 // parse the screenshots for movie and add data in "video" to the store.
-let video = duplo_rs::files::process_video(file, video_id as usize, num_videos);
+let video = duplo_rs::files::process_video(file, video_id as usize, num_videos, num_seconds_between_screenshots);
 store.add(&mut sql_client, &video.id, &video, video.runtime);
 
 // Query the store based on movie "video".
@@ -99,6 +101,14 @@ let (matches, failedid, _failedhash) =
     duplo_rs::files::find_similar_videos(&store, &mut sql_client, &video.id, &video);
 // matches[0] is the best match.
 ```
+
+The search for similar videos in the database has to be done one by one. The speed is severely limited. Each new video will be compared screenshot by screenshot. As a rough estimate with six screenshots a minute the comparison takes 1 to 2 minutes for five minutes of video. If you have memory to spend, the library offers to store the last N used videos data in memory for speeding up the search. But for 100 videos this will block 10 to 15 Gigabytes of the memmory of the machine for as long as the program runs! Fro the default settings of the demo app.
+
+A trade-off between the running time and the quality of similar video detection is necessary depending on what needs to be detected.
+
+The demo app is designed on the precision side of the evaluation. It takes a screenshot every 10 seconds and considers a minimum length of 1 minute as a similar video. Outside of Music or TikTok videos scenes are longer than 10 seconds. So the probability to find a similar frame in a modified video is good.
+
+A screenshot every five minutes would be much faster and use 30x less resources, but exclusively find the same file that has only been edited after the minimum sequence number of screenshots.
 
 ## Documentation
 

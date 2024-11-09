@@ -15,6 +15,83 @@ static WEIGHTSUMS: [f64; 6] = [58.58 as f64, 2.45, 1.9, 1.19, 0.93, 0.71];
 pub static CTRL_C_PRESSED: bool = false;
 
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
+pub struct CandidateCache {
+    pub map: std::collections::BTreeMap<u32, crate::videocandidate::VideoCandidate>,
+    pub fifo: std::collections::LinkedList<u32>,
+    pub max_candidates: usize,
+}
+
+impl Default for CandidateCache {
+    fn default() -> CandidateCache {
+        CandidateCache {
+            map: std::collections::BTreeMap::new(),
+            fifo: std::collections::LinkedList::new(),
+            max_candidates: 0,
+        }
+    }
+}
+
+impl CandidateCache {
+    pub fn new(max_candidates: usize) -> Self {
+        let mut v = CandidateCache {
+            ..Default::default()
+        };
+        v.max_candidates = max_candidates;
+        v
+    }
+
+    pub fn contains(&self, video_id: u32) -> bool {
+        if self.map.contains_key(&video_id) {
+            return true;
+        }
+        false
+    }
+
+    pub fn add(&mut self, video: crate::videocandidate::VideoCandidate) {
+        if self.max_candidates == 0 {
+            return;
+        }
+        if self.fifo.len() == self.max_candidates {
+            // drop the oldest entry
+            let drop_id = self.fifo.pop_front();
+            if drop_id.is_some() {
+                self.map.remove(&drop_id.unwrap());
+            }
+        }
+        self.fifo.push_back(video.index);
+        self.map.insert(video.index, video);
+    }
+
+    // encode the data structure to binary stream
+    pub fn encode(&self, to: &mut Vec<u8>) {
+        crate::marshal::store_usize(self.map.len(), to);
+        for id in self.fifo.iter() {
+            self.map[id].encode(to);
+        }
+        crate::marshal::store_usize(self.fifo.len(), to);
+        for id in self.fifo.iter() {
+            crate::marshal::store_u32(*id, to);
+        }
+        crate::marshal::store_usize(self.max_candidates, to);
+    }
+
+    // decode data structure from binary stream
+    pub fn decode(&mut self, from: &mut std::io::Cursor<Vec<u8>>) {
+        let maplen = crate::marshal::restore_usize(from);
+        for _ in 0..maplen {
+            let mut candidate = crate::videocandidate::VideoCandidate::new();
+            candidate.decode(from);
+            self.map.insert(candidate.index, candidate);
+        }
+        let fifolen = crate::marshal::restore_usize(from);
+        for _ in 0..fifolen {
+            self.fifo.push_back(crate::marshal::restore_u32(from));
+        }
+        self.max_candidates = crate::marshal::restore_usize(from);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub struct ScreenshotIndex {
     pub id: String,
     pub video_id: u32,
@@ -150,6 +227,9 @@ pub struct VideoStore {
     pub num_threads: u32,
 
     pub modified: bool,
+    pub num_seconds_between_screenshots: u32, 
+    pub min_similar_screenshots_in_sequence: u32,
+    candidate_cache: CandidateCache,
 }
 
 impl Default for VideoStore {
@@ -167,6 +247,9 @@ impl Default for VideoStore {
             num_threads: 1,
             sensitivity: -100.0,
             modified: false,
+            num_seconds_between_screenshots: 10, 
+            min_similar_screenshots_in_sequence: 6,
+            candidate_cache: CandidateCache::new(100),
         }
     }
 }
@@ -177,6 +260,9 @@ impl VideoStore {
         sensitivity: f64,
         start_directory: &str,
         num_threads: u32,
+        num_seconds_between_screenshots: u32,
+        min_similar_screenshots_in_sequence: u32,
+        max_candidates_in_cache: usize, 
     ) -> Self {
         let mut v = VideoStore {
             ..Default::default()
@@ -184,7 +270,10 @@ impl VideoStore {
         v.sensitivity = sensitivity;
         v.start_directory = start_directory.to_string();
         v.num_threads = num_threads;
-        let query = "SELECT sensitivity, start_directory, num_threads FROM videostore_parameters WHERE config_id = 1";
+        v.num_seconds_between_screenshots = num_seconds_between_screenshots;
+        v.min_similar_screenshots_in_sequence = min_similar_screenshots_in_sequence;
+        v.candidate_cache.max_candidates = max_candidates_in_cache;
+        let query = "SELECT * FROM videostore_parameters WHERE config_id = 1";
         match connection.prepare(query) {
             Ok(mut statement) => {
                 match statement.query(params![]) {
@@ -204,6 +293,18 @@ impl VideoStore {
                                     if s_opt.is_ok() {
                                         v.num_threads = s_opt.unwrap();
                                     }
+                                    let s_opt = row.get(4);
+                                    if s_opt.is_ok() {
+                                        v.num_seconds_between_screenshots = s_opt.unwrap();
+                                    }
+                                    let s_opt = row.get(5);
+                                    if s_opt.is_ok() {
+                                        v.min_similar_screenshots_in_sequence = s_opt.unwrap();
+                                    }
+                                    let s_opt = row.get(6);
+                                    if s_opt.is_ok() {
+                                        v.candidate_cache.max_candidates = s_opt.unwrap();
+                                    }
                                     break;
                                 },
                                 Ok(None) => {
@@ -221,9 +322,12 @@ impl VideoStore {
                         log::error!("could not read line from parameter database: {}", err);
                     }
                 }
-                if v.sensitivity != sensitivity || v.num_threads != num_threads {
+                if v.sensitivity != sensitivity 
+                || v.num_seconds_between_screenshots != num_seconds_between_screenshots 
+                || v.min_similar_screenshots_in_sequence != min_similar_screenshots_in_sequence
+                || v.candidate_cache.max_candidates != max_candidates_in_cache {
                     // change the parameters in the database
-                    let query_delete = "DELETE FROM duplo_rs.videostore_parameters WHERE config_id = 1";
+                    let query_delete = "DELETE FROM videostore_parameters WHERE config_id = 1";
                     match connection.execute(query_delete, params![]) {
                         Ok(retval) => log::warn!("Deleted {} data from parameters.", retval),
                         Err(error) => {
@@ -233,8 +337,8 @@ impl VideoStore {
                     }
                     let sensitivity_u32 = v.sensitivity as u32;
                     match connection.execute(
-                        "INSERT INTO videostore_parameters (config_id, sensitivity, start_directory, num_threads) VALUES (?1, ?2, ?3, ?4)",
-                        params![&1, &sensitivity_u32, &v.start_directory, &v.num_threads],
+                        "INSERT INTO videostore_parameters (config_id, sensitivity, start_directory, num_threads, num_seconds_between_screenshots, min_similar_screenshots_in_sequence, max_candidates_in_cache) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                        params![&1, &sensitivity_u32, &v.start_directory, &v.num_threads, &v.num_seconds_between_screenshots, &v.min_similar_screenshots_in_sequence, &v.candidate_cache.max_candidates],
                     ) {
                         Ok(retval) => log::warn!("Inserted {} data into parameter.", retval),
                         Err(error) => {
@@ -245,6 +349,9 @@ impl VideoStore {
                     v.sensitivity = sensitivity;
                     v.start_directory = start_directory.to_string();
                     v.num_threads = num_threads;
+                    v.num_seconds_between_screenshots = num_seconds_between_screenshots;
+                    v.min_similar_screenshots_in_sequence = min_similar_screenshots_in_sequence;
+                    v.candidate_cache.max_candidates = max_candidates_in_cache;
                 }
             },
             Err(error) => {
@@ -425,6 +532,7 @@ impl VideoStore {
             candidate_id = self.num_candidates + 1;
             let mut blob = Vec::new();
             video.encode(&mut blob);
+            log::warn!("Inserting Video information of length {} and data size of {} MegaBytes", video.runtime, blob.len() / 1024 / 1024);
             match connection.execute(
                 "INSERT INTO videostore_candidates (candidate_id, filename, video_id, data) VALUES (?1, ?2, ?3, ?4)",
                 params![&candidate_id, &video.id, &video.index, &blob],
@@ -577,34 +685,18 @@ impl VideoStore {
 
     /// Find all similar screenshots for a single screenshot
     fn search_matches(
-        &self,
+        &mut self,
         client: &mut rusqlite::Connection,
         hash: &crate::hash::Hash,
+        video_ids: &std::collections::BTreeMap<u32, usize>,
+        screenshot_index_global: usize,
+        video_screenshot_to_score_map: &Vec<Vec<usize>>,
+        scoreid_to_video_screenshot_map: &Vec<ScreenshotIndex>,
     ) -> crate::videomatches::VideoMatches {
         let mut ms = crate::videomatches::VideoMatches::new();
         // build a mapping of video, screenshot to a global image index
         if self.num_candidates == 0 {
             return ms;
-        }
-        let mut video_screenshot_to_score_map = Vec::new();
-        let mut scoreid_to_video_screenshot_map = Vec::new();
-        let mut video_ids = std::collections::BTreeMap::new();
-        let mut screenshot_index_global: usize = 0;
-        for video_id in 1..self.num_candidates + 1 {
-            let (candidate_id, candidate) = self.return_candidate(client, video_id);
-            let video_pos = video_screenshot_to_score_map.len();
-            video_ids.insert(candidate.index, candidate_id as usize);
-            video_screenshot_to_score_map.push(Vec::new());
-            for screenshot_pos in 0..candidate.screenshots.len() {
-                video_screenshot_to_score_map[video_pos].push(screenshot_index_global);
-                scoreid_to_video_screenshot_map.push(ScreenshotIndex::from(
-                    &candidate.id,
-                    video_id,
-                    screenshot_pos as u32 + 1,
-                    candidate.runtime,
-                ));
-                screenshot_index_global += 1;
-            }
         }
         // prepare the scoring vector where we can rate any existing screenshot
         let mut scores: Vec<f64> = Vec::new();
@@ -689,13 +781,25 @@ impl VideoStore {
                 let mut m = crate::videomatches::VideoMatch::new();
                 let video_id = scoreid_to_video_screenshot_map[index].video_id;
                 let screenshot_id = scoreid_to_video_screenshot_map[index].screenshot_id;
-                let (_, candidate) = self.return_candidate(client, video_id);
-                log::warn!("Found Match {}", candidate.id);
-                m.id = candidate.id.clone();
+                let screenshot;
+                if self.candidate_cache.max_candidates > 0 {
+                    if !self.candidate_cache.contains(video_id) {
+                        let (_, candidate) = self.return_candidate(client, video_id);
+                        log::warn!("Found Match {}", candidate.id);
+                        self.candidate_cache.add(candidate);
+                    }
+                    m.id = self.candidate_cache.map[&video_id].id.clone();
+                    let screenshot_pos = screenshot_id as usize - 1;
+                    screenshot = self.candidate_cache.map[&video_id].screenshots[screenshot_pos].clone();
+                } else {
+                    let (_, candidate) = self.return_candidate(client, video_id);
+                    log::warn!("Found Match {}", candidate.id);
+                    m.id = candidate.id.clone();
+                    let screenshot_pos = screenshot_id as usize - 1;
+                    screenshot = candidate.screenshots[screenshot_pos].clone();
+                }
                 m.video_id = video_id;
                 m.screenshot_id = screenshot_id;
-                let screenshot_pos = screenshot_id as usize - 1;
-                let screenshot = candidate.screenshots[screenshot_pos].clone();
                 m.timecode = screenshot.timecode;
                 m.score = scores[index];
                 m.ratio_diff = screenshot.hash.ratio.log(10.0).abs() - hash.ratio.log(10.0);
@@ -753,7 +857,7 @@ impl VideoStore {
     /// The longer the sequence the better the match.
     ///
     pub fn query(
-        &self,
+        &mut self,
         client: &mut rusqlite::Connection,
         video: &crate::videocandidate::VideoCandidate,
     ) -> crate::videomatches::VideoMatches {
@@ -764,17 +868,48 @@ impl VideoStore {
         let mut sequences = std::collections::BTreeMap::new();
         let mut active_sequence_counter = std::collections::BTreeMap::new();
 
+        // prepare data structures
+        let mut video_screenshot_to_score_map = Vec::new();
+        let mut scoreid_to_video_screenshot_map = Vec::new();
+        let mut video_ids: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
+        let mut screenshot_index_global: usize = 0;
+        for video_id in 1..self.num_candidates + 1 {
+            let (candidate_id, candidate) = self.return_candidate(client, video_id);
+            let video_pos = video_screenshot_to_score_map.len();
+            video_ids.insert(candidate.index, candidate_id as usize);
+            video_screenshot_to_score_map.push(Vec::new());
+            for screenshot_pos in 0..candidate.screenshots.len() {
+                video_screenshot_to_score_map[video_pos].push(screenshot_index_global);
+                scoreid_to_video_screenshot_map.push(ScreenshotIndex::from(
+                    &candidate.id,
+                    video_id,
+                    screenshot_pos as u32 + 1,
+                    candidate.runtime,
+                ));
+                screenshot_index_global += 1;
+            }
+        }
+
         // search for each screenshot of the current video in the store
+        let report_interval = (5 * 60 / self.num_seconds_between_screenshots) as usize;
         for screenshot_pos in 0..video.screenshots.len() {
             let hash = &video.screenshots[screenshot_pos].hash;
-            let matches = self.search_matches(client, hash);
+            let matches = self.search_matches(
+                                client, 
+                                hash, 
+                                &video_ids,
+                                screenshot_index_global,
+                                &video_screenshot_to_score_map,
+                                &scoreid_to_video_screenshot_map,
+                            );
             let mut previous_videos = std::collections::BTreeSet::new();
             for (key, _) in sequences.iter() {
                 previous_videos.insert(*key);
             }
             let mut new_videos= std::collections::BTreeSet::new();
-            if screenshot_pos % 30 == 0 {
-                log::warn!("Comparing new video with the databse. Currently at position {} Minutes into the video", (screenshot_pos / 6) as u32);
+            if screenshot_pos % report_interval == 0 {
+                log::warn!("Comparing new video with the databse. Currently at position {} Minutes into the video", 
+                            (screenshot_pos as u32 / self.min_similar_screenshots_in_sequence) as u32);
             }
             for i in 0..matches.len() {
                 let video_id = matches.m[i].video_id;
@@ -821,10 +956,14 @@ impl VideoStore {
         // done parsing, add everything with more than 5 matches in a row to the list
         for (video_id, v) in sequences {
             // check if the sequence was longer than a minute
-            if v.len() > 5 {
+            if v.len() >= self.min_similar_screenshots_in_sequence as usize {
                 let mut m = crate::videomatches::VideoMatch::new();
-
-                let (_, matchedvideo) = self.return_candidate(client, video_id);
+                let matchedvideo;
+                if self.candidate_cache.contains(video_id) {
+                    matchedvideo = self.candidate_cache.map[&video_id].clone();
+                } else {
+                    (_, matchedvideo) = self.return_candidate(client, video_id);
+                }
                 m.id = matchedvideo.id.clone();
                 m.video_id = matchedvideo.index;
                 m.screenshot_id = 0;
@@ -1148,7 +1287,10 @@ pub fn connect(
                 config_id UNSIGNED BIG INT PRIMARY KEY NOT NULL, 
                 sensitivity BIGINT, 
                 start_directory TEXT, 
-                num_threads UNSIGNED BIG INT
+                num_threads UNSIGNED BIG INT,
+                num_seconds_between_screenshots UNSIGNED BIG INT,
+                min_similar_screenshots_in_sequence UNSIGNED BIG INT,
+                max_candidates_in_cache UNSIGNED BIG INT
             )", [],
         ) {
             Ok(_ret) => {},
@@ -1158,8 +1300,8 @@ pub fn connect(
             }
         }
         match connection.execute(
-            "INSERT INTO videostore_parameters (config_id, sensitivity, start_directory, num_threads) VALUES (?1, ?2, ?3, ?4)",
-            params![&1, &-60, &"./", &2],
+            "INSERT INTO videostore_parameters (config_id, sensitivity, start_directory, num_threads, num_seconds_between_screenshots, min_similar_screenshots_in_sequence, max_candidates_in_cache) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![&1, &-60, &"./", &2, &10, &6, &100],
         ) {
             Ok(retval) => log::warn!("Inserted {} data into parameter.", retval),
             Err(error) => {

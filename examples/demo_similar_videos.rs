@@ -24,11 +24,19 @@ use std::thread;
 /// 
 /// The search for similar videos in the database has to be done one by one.
 /// The speed is severely limited. Each new video will be compared screenshot by screenshot. 
-/// A rough estimate is thirty seconds per screenshot or fifteen minutes for five minutes of video!
-/// This is a trade-off between the running time and the quality of similar video detection.
-/// This demo app rests solely on the precision side of the evaluation.
+/// A rough estimate is one minute for five minutes of video. There is a cache of the previously compared videos.
+/// Reading the data from the database costs time. The more memory you can spare for the Cache, the faster the comparison.
+/// But be careful. As long as the program is running the Memory will be blocked by the Cache.
+/// If you run this program on a computer you intend to do things on, don't use more than a third of your RAM for cache!
+/// The data for a video is around 100 MB of data. A Cache of 100 Videos will take 10 GB of RAM that you cannot use any more.
+///
+/// The search algorithm and the num_seconds_between_screenshots and min_similar_screenshots_in_sequence are the main parameters to fine-tune
+/// what you want to do with the search. The user of the library has to decide the trade-off between the running time and the quality of similar video detection.
+/// This demo app rests solely on the precision side of the evaluation. To show what this algorithm can do.
 /// Outside of Music or TikTok videos scenes are longer than 10 seconds. So the probability to find a similar frame in a modified video is good.
+/// With six matches in a row you can find compilations down to one minute of runtime per video.
 /// A screenshot every five minutes would be much faster and use 30x less resources, but only find the same file that has been cut in the end.
+/// The chance to find a similar scene with a distance of two and a half minutes in average is next to zero unless you screen security footage of an empty hallway.
 /// 
 /// You can stop a scan at any time. Any video that has already been parsed will not be parsed again.
 /// It's data will be deleted if the file is no longer available.
@@ -47,12 +55,18 @@ pub fn main() {
 
     let curdir = std::env::current_dir().unwrap().as_os_str().to_owned();
     let mut directory = duplo_rs::files::osstring_to_string(&curdir);
-    let num_threads = 1;
+    let mut num_threads = 1;
+    let mut num_seconds_between_screenshots = 10u32;
+    let mut min_similar_screenshots_in_sequence = 6u32;
+    let mut max_candidates_in_cache = 100;
     let matches = command!() // requires `cargo` feature
         .arg(Arg::new("logfile").short('l').long("log"))
         .arg(Arg::new("directory").short('d').long("directory"))
         .arg(Arg::new("sensitivity").short('s').long("sensitivity"))
-        //.arg(Arg::new("num_threads").short('t').long("num_threads"))
+        .arg(Arg::new("num_threads").short('t').long("num_threads"))
+        .arg(Arg::new("num_seconds_between_screenshots").short('b').long("num_seconds_between_screenshots"))
+        .arg(Arg::new("min_similar_screenshots_in_sequence").short('m').long("min_similar_screenshots_in_sequence"))
+        .arg(Arg::new("max_candidates_in_cache").short('c').long("max_candidates_in_cache"))
         .arg(
             Arg::new("recursive")
                 .short('r')
@@ -73,12 +87,38 @@ pub fn main() {
             sensitivity -= ret.unwrap() as f64;
         }
     }
-    //if let Some(ret) = matches.get_one::<String>("num_threads") {
-    //    let ret = i64::from_str_radix(ret, 10);
-    //    if ret.is_ok() {
-    //        num_threads = ret.unwrap() as u32;
-    //    }
-    //}
+    if let Some(ret) = matches.get_one::<String>("num_seconds_between_screenshots") {
+        let ret = i64::from_str_radix(ret, 10);
+        if ret.is_ok() {
+            num_seconds_between_screenshots = ret.unwrap() as u32;
+        }
+    }
+    if let Some(ret) = matches.get_one::<String>("min_similar_screenshots_in_sequence") {
+        let ret = i64::from_str_radix(ret, 10);
+        if ret.is_ok() {
+            min_similar_screenshots_in_sequence = ret.unwrap() as u32;
+        }
+    }
+    if let Some(ret) = matches.get_one::<String>("max_candidates_in_cache") {
+        let ret = i64::from_str_radix(ret, 10);
+        if ret.is_ok() {
+            max_candidates_in_cache = ret.unwrap() as usize;
+        }
+    }
+    if let Some(ret) = matches.get_one::<String>("num_threads") {
+        let ret = i64::from_str_radix(ret, 10);
+        if ret.is_ok() {
+            num_threads = ret.unwrap() as u32;
+        }
+    }
+    println!("Sensitivity {}\nStartdirectory {}\nnum_threads {}\nnum sec betw. screenshots {}\nmin similar screenshots in sequence {}\nnum candidates in cache {}", 
+        sensitivity, 
+        directory,
+        num_threads,
+        num_seconds_between_screenshots,
+        min_similar_screenshots_in_sequence,
+        max_candidates_in_cache
+    );
     if let Some(ret) = matches.get_one::<bool>("recursive") {
         recursive = *ret;
     }
@@ -132,8 +172,11 @@ pub fn main() {
             sensitivity,
             &directory,
             num_threads,
+            num_seconds_between_screenshots,
+            min_similar_screenshots_in_sequence,
+            max_candidates_in_cache,
         );
-        progressbar.add(store.num_candidates as u64);
+        
         let num_videos = filelist.len() as u32;
         //let prev_videos = store.num_candidates;
         let mut video_id_counter = store.num_candidates + 1;
@@ -153,6 +196,7 @@ pub fn main() {
                 let filestring = duplo_rs::files::osstring_to_string(&filepath.as_os_str());
                 if store.ids.contains_key(&filestring) {
                     filepos += 1;
+                    progressbar.inc();
                     continue;
                 }
                 video_id_counter += 1;
@@ -160,7 +204,7 @@ pub fn main() {
                 let handle = thread::spawn(move || {
                     // call function with
                     // sender as parameter
-                    parallel_processor(tx1, &filepath, video_id, num_videos);
+                    parallel_processor(tx1, &filepath, video_id, num_videos, store.num_seconds_between_screenshots);
                 });
                 filepos += 1;
                 handles.push(handle);
@@ -174,7 +218,7 @@ pub fn main() {
                 let video = video_opt.unwrap();
 
                 let (matches, _failedid, _failedhash) = duplo_rs::files::find_similar_videos(
-                    &store,
+                    &mut store,
                     &mut sql_client,
                     &video.id,
                     &video,
@@ -207,8 +251,9 @@ fn parallel_processor(
     filepath: &std::path::PathBuf,
     video_id: u32,
     num_videos: u32,
+    num_seconds_between_screenshots: u32,
 ) {
-    let video = duplo_rs::files::process_video(filepath, video_id as usize, num_videos);
+    let video = duplo_rs::files::process_video(filepath, video_id as usize, num_videos, num_seconds_between_screenshots);
     // send value
     a.send(video).unwrap();
     return;

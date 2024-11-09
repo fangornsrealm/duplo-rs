@@ -458,12 +458,13 @@ fn create_screenshots(
     filepath: &str,
     video_id: u32,
     num_videos: u32,
+    num_seconds_between_screenshots: u32,
 ) -> Result<(Vec<crate::videocandidate::Screenshot>, VideoMetadata), image::ImageError> {
     let mut v = Vec::new();
 
     let meta = video_metadata(filepath);
     let mut screenshot_id: usize = 1;
-    let mut timecode: u32 = 10;
+    let mut timecode = num_seconds_between_screenshots;
     let outputpattern = format!("{}_%03d.jpeg", filepath);
     let output = format!("{}_001.jpeg", filepath);
     let outputpath = std::path::Path::new(&output);
@@ -502,7 +503,7 @@ fn create_screenshots(
         }
         if !outputpath.is_file() {
             log::error!("Failed to create screenshot: {}", format!("ffmpeg -ss {} -i {} -frames:v 1 -q:v 2 ", time, filepath));
-            log::error!("File {} seems to be defective from position {}%", filepath, timecode / meta.duration * 100);
+            log::error!("File {} seems to be defective from position {}%", filepath, (timecode / meta.duration) * 100);
             break;
         }
         let res = image::ImageReader::open(outputpath);
@@ -522,7 +523,7 @@ fn create_screenshots(
             );
             v.push(ss);
         }
-        timecode += 10;
+        timecode += num_seconds_between_screenshots;
         screenshot_id += 1;
     }
     if outputpath.is_file() {
@@ -550,11 +551,12 @@ pub fn process_video(
     path: &PathBuf,
     video_id: usize,
     num_videos: u32,
+    num_seconds_between_screenshots: u32,
 ) -> crate::videocandidate::VideoCandidate {
     let id = osstring_to_string(path.as_os_str());
     let mut video = crate::videocandidate::VideoCandidate::from(&id, video_id);
 
-    match create_screenshots(&id, video.index, num_videos) {
+    match create_screenshots(&id, video.index, num_videos, num_seconds_between_screenshots) {
         Ok((v, meta)) => {
             video.width = meta.width;
             video.height = meta.height;
@@ -575,7 +577,7 @@ pub fn process_video(
 }
 
 pub fn find_similar_videos(
-    store: &crate::videostore::VideoStore,
+    store: &mut crate::videostore::VideoStore,
     client: &mut rusqlite::Connection,
     id: &str,
     video: &crate::videocandidate::VideoCandidate,
