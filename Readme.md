@@ -1,12 +1,12 @@
 # Duplo-rs - Detect Similar or Duplicate Images and Videos
 
-This Rust library allows you to perform a visual query on a set of images or videos, returning the results in the order of similarity. This allows you to effectively detect duplicates with minor modifications (e.g. some colour correction or watermarks) or text overlays.
+This Rust library allows you to perform a visual query on a set of images or videos, returning the results in the order of similarity. This allows you to effectively detect duplicates with minor modifications (e.g. some colour correction or watermarks) or text overlays. For videos - depending on the settings - it should be possible to even find clips in a compilation video.
 
 It is an implementation of [Fast Multiresolution Image Querying](http://grail.cs.washington.edu/projects/query/mrquery.pdf) by Jacobs et al. which uses truncated Haar wavelet transforms to create visual hashes of the images. The same method has previously been used in the [imgSeek](http://www.imgseek.net) software and the [retrievr](http://labs.systemone.at/retrievr) website.
 
 This project started as s re-implementation of [rivo/duplo](https://github.com/rivo/duplo) for the similar image technology that works for millions of images if it is allowed to run for weeks.
 
-[duplo-rs](http://github.com/zuiopqewrt/duplo-rs) adds the ability to use the image search on videos and video segments. The video algorithm takes screenshots every 10 seconds and searches similar images for each. A video sequence is considered similar if at least six screenshots in a row match.
+[duplo-rs](http://github.com/fangornsrealm/duplo-rs) adds the ability to use the image search on videos and video segments. The video algorithm takes screenshots every 10 seconds and searches similar images for each. A video sequence is considered similar if at least six screenshots in a row match.
 
 The user can fine-tune the sensitivity of the search algorithm with a value between 0 and 100.
 
@@ -113,7 +113,7 @@ A screenshot every five minutes would be much faster and use 30x less resources,
 
 ## Documentation
 
-[http://github.com/zuiopqewrt/duplo-rs](http://github.com/zuiopqewrt/duplo-rs)
+[http://github.com/fangornsrealm/duplo-rs](http://github.com/fangornsrealm/duplo-rs)
 
 ## Possible Applications
 
