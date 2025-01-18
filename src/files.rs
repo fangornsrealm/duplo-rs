@@ -428,24 +428,25 @@ fn video_metadata(filepath: &str) -> VideoMetadata {
         .expect("failed to execute process");
     match String::from_utf8(ffmpeg_output.stderr) {
         Ok(message) => {
-            let re_duration = Regex::new(
+            if let Ok(re_duration) = Regex::new(
                 r"(?i)\s*Duration:\s+(?P<hours>\d+):(?P<minutes>\d+):(?P<seconds>\d+).\d+\s*,",
-            )
-            .unwrap();
-            if re_duration.is_match(&message) {
-                let caps = re_duration.captures(&message).unwrap();
-                let hours = string_to_uint(&caps["hours"]);
-                let minutes = string_to_uint(&caps["minutes"]);
-                let seconds = string_to_uint(&caps["seconds"]);
-                meta.duration = hours * 3600 + minutes * 60 + seconds;
+            ) {
+                if re_duration.is_match(&message) {
+                    let caps = re_duration.captures(&message).unwrap();
+                    let hours = string_to_uint(&caps["hours"]);
+                    let minutes = string_to_uint(&caps["minutes"]);
+                    let seconds = string_to_uint(&caps["seconds"]);
+                    meta.duration = hours * 3600 + minutes * 60 + seconds;
+                }
             }
-            let re_video =
-                Regex::new(r"(?i), (?P<width>\d+)x(?P<height>\d+).*, (?P<fps>\d+) fps").unwrap();
-            if re_video.is_match(&message) {
-                let caps = re_video.captures(&message).unwrap();
-                meta.width = string_to_uint(&caps["width"]);
-                meta.height = string_to_uint(&caps["height"]);
-                meta.framerate = string_to_float(&caps["fps"]);
+            if let Ok(re_video) =
+                Regex::new(r"(?i), (?P<width>\d+)x(?P<height>\d+).*, (?P<fps>\d+) fps") {
+                if re_video.is_match(&message) {
+                    let caps = re_video.captures(&message).unwrap();
+                    meta.width = string_to_uint(&caps["width"]);
+                    meta.height = string_to_uint(&caps["height"]);
+                    meta.framerate = string_to_float(&caps["fps"]);
+                }
             }
         }
         Err(error) => log::error!("Error: {}", error),
@@ -459,6 +460,7 @@ fn create_screenshots(
     video_id: u32,
     num_videos: u32,
     num_seconds_between_screenshots: u32,
+    id_in_files_to_process: u32,
 ) -> Result<(Vec<crate::videocandidate::Screenshot>, VideoMetadata), image::ImageError> {
     let mut v = Vec::new();
 
@@ -494,7 +496,7 @@ fn create_screenshots(
         match String::from_utf8(ffmpeg_output.stderr) {
             Ok(_message) => log::warn!(
                 "Processing video {} of {} path {} timecode {}",
-                video_id + 1,
+                id_in_files_to_process,
                 num_videos,
                 filepath,
                 time
@@ -552,11 +554,12 @@ pub fn process_video(
     video_id: usize,
     num_videos: u32,
     num_seconds_between_screenshots: u32,
+    id_in_files_to_process: u32,
 ) -> crate::videocandidate::VideoCandidate {
     let id = osstring_to_string(path.as_os_str());
     let mut video = crate::videocandidate::VideoCandidate::from(&id, video_id);
 
-    match create_screenshots(&id, video.index, num_videos, num_seconds_between_screenshots) {
+    match create_screenshots(&id, video.index, num_videos, num_seconds_between_screenshots, id_in_files_to_process) {
         Ok((v, meta)) => {
             video.width = meta.width;
             video.height = meta.height;

@@ -204,7 +204,7 @@ pub fn main() {
                 let handle = thread::spawn(move || {
                     // call function with
                     // sender as parameter
-                    parallel_processor(tx1, &filepath, video_id, num_videos, store.num_seconds_between_screenshots);
+                    parallel_processor(tx1, &filepath, video_id, num_videos, store.num_seconds_between_screenshots, filepos + 1);
                 });
                 filepos += 1;
                 handles.push(handle);
@@ -217,18 +217,19 @@ pub fn main() {
                 }
                 let video = video_opt.unwrap();
 
-                let (matches, _failedid, _failedhash) = duplo_rs::files::find_similar_videos(
+                let (videomatches, _failedid, _failedhash) = duplo_rs::files::find_similar_videos(
                     &mut store,
                     &mut sql_client,
                     &video.id,
                     &video,
                 );
+                log::warn!("Found {} matches for video {}.", videomatches.len(), video.id);
                 progressbar.inc();
                 let mut compare: Vec<duplo_rs::videocandidate::VideoCandidate> = Vec::new();
                 compare.push(video.clone());
-                for i in 0..matches.m.len() {
-                    log::warn!("Match {} is similar to {}.", matches.m[i].id, video.id);
-                    let index = store.ids[&matches.m[i].id];
+                for i in 0..videomatches.m.len() {
+                    log::warn!("Match {} is similar to {}.", videomatches.m[i].id, video.id);
+                    let index = store.ids[&videomatches.m[i].id];
                     let (_, candidate) = store.return_candidate(&mut sql_client, index as u32);
                     compare.push(candidate);
                 }
@@ -252,8 +253,9 @@ fn parallel_processor(
     video_id: u32,
     num_videos: u32,
     num_seconds_between_screenshots: u32,
+    id_in_files_to_process: u32,
 ) {
-    let video = duplo_rs::files::process_video(filepath, video_id as usize, num_videos, num_seconds_between_screenshots);
+    let video = duplo_rs::files::process_video(filepath, video_id as usize, num_videos, num_seconds_between_screenshots, id_in_files_to_process);
     // send value
     a.send(video).unwrap();
     return;

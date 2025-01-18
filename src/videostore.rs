@@ -207,8 +207,16 @@ impl Sequence {
 /// sentivity (Hamming distance threshold) for the perceptual hashes.
 /// Larger values will allow more images to be seen as *similar*
 ///
-/// modified tells Whether this store was modified since it was loaded/created.
+/// start_directory the directory the direcotory list or walk started. Also the directory possible matches will be presented in
+/// num_threads     number of threads scanning videos
 ///
+/// modified tells Whether this store was modified since it was loaded/created.
+/// num_seconds_between screenshots   default 10. Increase for quicker scanning and less resources.
+/// min_similar_screenshots_in_sequence  number of similar screenshots in a row that have to match to count as similar video. Default: 6 or 1 minute
+///
+/// candidate_cache   hold N last used video data in RAM so we don't have to hit the database all the time.
+///                   blocks N * <data_size> for the runtime of the program! Where <data_size> is 100 MB or more, depending on the runtime of the video.
+///                   This will easlity eat 10 GB or your RAM for 50 < N < 150.
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub struct VideoStore {
     //sync.RWMutex,
@@ -747,7 +755,7 @@ impl VideoStore {
                         || video_screenshot_to_score_map[video_pos].len()
                             == 0
                     {
-                        //log::error!("Search Matches failed to lookup the video position {} by its Index {}", video_pos, matchscreenshot.video_id);
+                        log::error!("Search Matches failed to lookup the video position {} by its Index {}", video_pos, matchscreenshot.video_id);
                         return ms;
                     }
                     if matchscreenshot.screenshot_id < 1 {
@@ -824,26 +832,21 @@ impl VideoStore {
     fn rate_match(
         &self,
         client: &mut rusqlite::Connection,
-        matches: &crate::videomatches::VideoMatches,
         new_video: &crate::videocandidate::VideoCandidate,
         match_id: u32,
+        screenshot_id: u32,
         num_matches: usize,
+        time_between_screenshots: u32,
     ) -> crate::videomatches::VideoMatch {
         let mut m = crate::videomatches::VideoMatch::new();
-        for i in 0..matches.m.len() {
-            if matches.m[i].video_id == match_id {
-                let matchedvideo = matches.m[i].clone();
-                m.id = matchedvideo.id.clone();
-                m.video_id = matchedvideo.video_id;
-                m.screenshot_id = matchedvideo.screenshot_id;
-                m.timecode = matchedvideo.timecode;
-                let (_, matched) = self.return_candidate(client, match_id);
-                m.score = -60.0                                                                            // base value
-                            - 100.0 * (num_matches as f64 * 10.0) / matched.runtime as f64                 // the longer the similar part, the better the match
-                            + ((new_video.width - matched.width) * (new_video.width - matched.width)) as f64
-                // if the resolution is higher the match gets better
-            }
-        }
+        let (_, matched) = self.return_candidate(client, match_id);
+        m.id = matched.id.clone();
+        m.video_id = matched.index;
+        m.screenshot_id = screenshot_id;
+        m.timecode = screenshot_id * time_between_screenshots as u32;
+        m.score = -60.0                                                                                // base value
+                    - 100.0 * (num_matches as f64 * time_between_screenshots as f64) / matched.runtime as f64 // the longer the similar part, the better the match
+                    + ((new_video.width - matched.width) * (new_video.width - matched.width)) as f64;  // if the resolution is higher the match gets better
 
         m
     }
@@ -874,9 +877,9 @@ impl VideoStore {
         let mut video_ids: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
         let mut screenshot_index_global: usize = 0;
         for video_id in 1..self.num_candidates + 1 {
-            let (candidate_id, candidate) = self.return_candidate(client, video_id);
+            let (_candidate_id, candidate) = self.return_candidate(client, video_id);
             let video_pos = video_screenshot_to_score_map.len();
-            video_ids.insert(candidate.index, candidate_id as usize);
+            video_ids.insert(candidate.index, video_id  as usize - 1);
             video_screenshot_to_score_map.push(Vec::new());
             for screenshot_pos in 0..candidate.screenshots.len() {
                 video_screenshot_to_score_map[video_pos].push(screenshot_index_global);
@@ -944,10 +947,18 @@ impl VideoStore {
                 // check if the sequence was longer than a minute amd add the ones long enough
                 if sequences[id].len() > 5 {
                     let videomatch =
-                        self.rate_match(client, &matches, &video, *id, sequences[id].len());
+                        self.rate_match(
+                            client, 
+                            &video, 
+                            *id, 
+                            screenshot_pos as u32, 
+                            sequences[id].len(),
+                            self.num_seconds_between_screenshots);
                     if videomatch.id.len() != 0 {
                         ms.m.push(videomatch);
                     }
+                } else {
+                    log::error!("Candidate {} had {} matches!", id, sequences[id].len());
                 }
                 sequences.remove(id);
             }

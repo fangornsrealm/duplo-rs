@@ -90,6 +90,7 @@ if sql_client_opt.is_ok() {
         num_threads,
         num_seconds_between_screenshots,
         min_similar_screenshots_in_sequence,
+        max_candidates_in_cache,
     );
 }
 // parse the screenshots for movie and add data in "video" to the store.

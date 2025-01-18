@@ -14,7 +14,7 @@ path = "examples/demo_similar_videos.rs"
 [dependencies]
 base64 = "0.22.1"
 build_html = "2.5.0"
-image = "0.25.4"
+image = "0.25.5"
 imagesize = "0.13"
 hamming_rs = "0.2.22"
 log = { version = "0.4.22", features = [
