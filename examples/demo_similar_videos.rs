@@ -51,7 +51,7 @@ use std::thread;
 pub fn main() {
     let mut logfile = "demo_similar_videos.txt".to_string();
     let mut recursive = false;
-    let mut sensitivity: f64 = -60.0;
+    let mut sensitivity: f64 = -20.0;
 
     let curdir = std::env::current_dir().unwrap().as_os_str().to_owned();
     let mut directory = duplo_rs::files::osstring_to_string(&curdir);

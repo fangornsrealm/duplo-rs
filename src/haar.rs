@@ -89,16 +89,25 @@ impl CoefMatrix {
     }
 
     pub fn decode(&mut self, from: &mut std::io::Cursor<Vec<u8>>) {
-        let s = crate::marshal::restore_usize(from);
-        for _i in 0..s {
-            let mut elem = Coef {
-                ..Default::default()
-            };
-            elem.decode(from);
-            self.coefs.push(elem);
+        if let Some(s) = crate::marshal::restore_usize(from) {
+            for _i in 0..s {
+                let mut elem = Coef {
+                    ..Default::default()
+                };
+                elem.decode(from);
+                self.coefs.push(elem);
+            }
         }
-        self.width = crate::marshal::restore_u32(from);
-        self.height = crate::marshal::restore_u32(from);
+        if let Some(r) = crate::marshal::restore_u32(from) {
+            self.width = r;
+        } else {
+            return;
+        }
+        if let Some(r) = crate::marshal::restore_u32(from) {
+            self.height = r;
+        } else {
+            return;
+        }
     }
 }
 

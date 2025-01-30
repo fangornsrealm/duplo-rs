@@ -4,7 +4,7 @@ pub struct VideoMatch {
     pub video_id: u32,
     pub screenshot_id: u32,
     pub timecode: u32,
-    pub score: f64, 
+    pub score: f64,
     pub ratio_diff: f64,
     pub dhash_distance: i64,
     pub histogram_distance: i64,
@@ -12,12 +12,22 @@ pub struct VideoMatch {
 
 impl VideoMatch {
     pub fn new() -> Self {
-        let v = VideoMatch{..Default::default()};
+        let v = VideoMatch {
+            ..Default::default()
+        };
         v
     }
 
-    pub fn from(id: &str, score: f64, ratio_diff: f64, dhash_distance: i64, histogram_distance: i64) -> Self {
-        let mut v = VideoMatch{..Default::default()};
+    pub fn from(
+        id: &str,
+        score: f64,
+        ratio_diff: f64,
+        dhash_distance: i64,
+        histogram_distance: i64,
+    ) -> Self {
+        let mut v = VideoMatch {
+            ..Default::default()
+        };
         v.id = id.to_string();
         v.score += score;
         v.ratio_diff += ratio_diff;
@@ -27,8 +37,10 @@ impl VideoMatch {
     }
 
     pub fn string(&self) -> String {
-        format!("{}: score={:.4}, ratio-diff={:.1}, dHash-dist={}, histDist={}",
-                self.id, self.score, self.ratio_diff, self.dhash_distance, self.histogram_distance)
+        format!(
+            "{}: score={:.4}, ratio-diff={:.1}, dHash-dist={}, histDist={}",
+            self.id, self.score, self.ratio_diff, self.dhash_distance, self.histogram_distance
+        )
     }
 
     pub fn encode(&self, to: &mut Vec<u8>) {
@@ -44,14 +56,41 @@ impl VideoMatch {
 
     pub fn decode(&mut self, from: &mut std::io::Cursor<Vec<u8>>) {
         self.id = crate::marshal::restore_string(from);
-        self.video_id = crate::marshal::restore_u32(from);
-        self.screenshot_id = crate::marshal::restore_u32(from);
-        self.timecode = crate::marshal::restore_u32(from);
-        self.score = crate::marshal::restore_f64(from);
-        self.ratio_diff = crate::marshal::restore_f64(from);
-        self.dhash_distance = crate::marshal::restore_i64(from);
-        self.histogram_distance = crate::marshal::restore_i64(from);
-
+        if let Some(r) = crate::marshal::restore_u32(from) {
+            self.video_id = r;
+        } else {
+            return;
+        }
+        if let Some(r) = crate::marshal::restore_u32(from) {
+            self.screenshot_id = r;
+        } else {
+            return;
+        }
+        if let Some(r) = crate::marshal::restore_u32(from) {
+            self.timecode = r;
+        } else {
+            return;
+        }
+        if let Some(r) = crate::marshal::restore_f64(from) {
+            self.score = r;
+        } else {
+            return;
+        }
+        if let Some(r) = crate::marshal::restore_f64(from) {
+            self.ratio_diff = r;
+        } else {
+            return;
+        }
+        if let Some(r) = crate::marshal::restore_i64(from) {
+            self.dhash_distance = r;
+        } else {
+            return;
+        }
+        if let Some(r) = crate::marshal::restore_i64(from) {
+            self.histogram_distance = r;
+        } else {
+            return;
+        }
     }
 }
 
@@ -77,18 +116,24 @@ pub struct VideoMatches {
 
 impl VideoMatches {
     pub fn new() -> Self {
-        let v = VideoMatches {..Default::default()};
+        let v = VideoMatches {
+            ..Default::default()
+        };
         v
     }
 
     pub fn from(m: Vec<VideoMatch>) -> Self {
-        let mut v = VideoMatches {..Default::default()};
+        let mut v = VideoMatches {
+            ..Default::default()
+        };
         v.m.extend(m);
         v
     }
 
-    pub fn len(&self) -> usize {self.m.len()}
-    
+    pub fn len(&self) -> usize {
+        self.m.len()
+    }
+
     pub fn swap(&mut self, pos1: usize, pos2: usize) {
         let tmp = self.m[pos1].clone();
         self.m[pos1] = self.m[pos2].clone();
@@ -111,7 +156,7 @@ impl VideoMatches {
             return;
         }
         for i in 0..self.m.len() - 1 {
-            for j in i+1..self.len() {
+            for j in i + 1..self.len() {
                 if self.less(j, i) {
                     self.swap(j, i);
                 }
@@ -128,21 +173,22 @@ impl VideoMatches {
     }
 
     pub fn decode(&mut self, from: &mut std::io::Cursor<Vec<u8>>) {
-        let s = crate::marshal::restore_usize(from);
-        for _i in 0..s {
-            let mut elem = VideoMatch {
-                ..Default::default()
-            };
-            elem.decode(from);
-            self.m.push(elem);
+        if let Some(s) = crate::marshal::restore_usize(from) {
+            for _i in 0..s {
+                let mut elem = VideoMatch {
+                    ..Default::default()
+                };
+                elem.decode(from);
+                self.m.push(elem);
+            }
+        } else {
+            return;
         }
     }
 }
 
 impl Default for VideoMatches {
     fn default() -> VideoMatches {
-        VideoMatches {
-            m: Vec::new(),
-        }
+        VideoMatches { m: Vec::new() }
     }
 }

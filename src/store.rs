@@ -285,21 +285,27 @@ impl Store {
 
     /// decode data structure from binary stream
     pub fn decode(&mut self, from: &mut std::io::Cursor<Vec<u8>>) {
-        let s = crate::marshal::restore_usize(from);
-        for _i in 0..s {
-            let mut elem = crate::candidate::Candidate::new();
-            elem.decode(from);
-            self.candidates.push(elem);
-        }
+        if let Some(s) = crate::marshal::restore_usize(from) {
+            for _i in 0..s {
+                let mut elem = crate::candidate::Candidate::new();
+                elem.decode(from);
+                self.candidates.push(elem);
+            }
+        } else {return;}
         self.ids.extend(crate::marshal::restore_hash_string_usize(from));
-        self.sensitivity = crate::marshal::restore_f64(from);
-        let s = crate::marshal::restore_usize(from);
-        for _i in 0..s {
-            let mut elem = Vec::new();
-            elem.extend(crate::marshal::restore_vec_u32(from));
-            self.indices.push(elem);
-        }
-        self.modified = crate::marshal::restore_bool(from);
+        if let Some(r) = crate::marshal::restore_f64(from) {
+            self.sensitivity = r;
+        } else {return;}
+        if let Some(s) = crate::marshal::restore_usize(from) {
+            for _i in 0..s {
+                let mut elem = Vec::new();
+                elem.extend(crate::marshal::restore_vec_u32(from));
+                self.indices.push(elem);
+            }
+        } else {return;}
+        if let Some(r) = crate::marshal::restore_bool(from) {
+            self.modified = r;
+        } else {return;}
         self.modified = false;
     }
 

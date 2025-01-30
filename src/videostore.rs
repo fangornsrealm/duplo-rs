@@ -77,17 +77,23 @@ impl CandidateCache {
 
     // decode data structure from binary stream
     pub fn decode(&mut self, from: &mut std::io::Cursor<Vec<u8>>) {
-        let maplen = crate::marshal::restore_usize(from);
-        for _ in 0..maplen {
-            let mut candidate = crate::videocandidate::VideoCandidate::new();
-            candidate.decode(from);
-            self.map.insert(candidate.index, candidate);
-        }
-        let fifolen = crate::marshal::restore_usize(from);
-        for _ in 0..fifolen {
-            self.fifo.push_back(crate::marshal::restore_u32(from));
-        }
-        self.max_candidates = crate::marshal::restore_usize(from);
+        if let Some(maplen) = crate::marshal::restore_usize(from) {
+            for _ in 0..maplen {
+                let mut candidate = crate::videocandidate::VideoCandidate::new();
+                candidate.decode(from);
+                self.map.insert(candidate.index, candidate);
+            }
+        } else {return;}
+        if let Some(fifolen) = crate::marshal::restore_usize(from) {
+            for _ in 0..fifolen {
+                if let Some(r) = crate::marshal::restore_u32(from) {
+                    self.fifo.push_back(r);
+                }        
+            }
+        } else {return;}
+        if let Some(r) = crate::marshal::restore_usize(from) {
+            self.max_candidates = r;
+        } else {return;}
     }
 }
 
@@ -139,9 +145,15 @@ impl ScreenshotIndex {
     // decode data structure from binary stream
     pub fn decode(&mut self, from: &mut std::io::Cursor<Vec<u8>>) {
         self.id = crate::marshal::restore_string(from);
-        self.video_id = crate::marshal::restore_u32(from);
-        self.screenshot_id = crate::marshal::restore_u32(from);
-        self.runtime = crate::marshal::restore_u32(from);
+        if let Some(r) = crate::marshal::restore_u32(from) {
+            self.video_id = r;
+        }
+        if let Some(r) = crate::marshal::restore_u32(from) {
+            self.screenshot_id = r;
+        }
+        if let Some(r) = crate::marshal::restore_u32(from) {
+            self.runtime = r;
+        }
     }
 }
 
@@ -945,7 +957,7 @@ impl VideoStore {
             let dropped_videos = previous_videos.difference(&new_videos);
             for id in dropped_videos {
                 // check if the sequence was longer than a minute amd add the ones long enough
-                if sequences[id].len() > 5 {
+                if sequences[id].len() > 0 {
                     let videomatch =
                         self.rate_match(
                             client, 
@@ -958,7 +970,7 @@ impl VideoStore {
                         ms.m.push(videomatch);
                     }
                 } else {
-                    log::error!("Candidate {} had {} matches!", id, sequences[id].len());
+                    log::error!("Candidate {} had {} matching Screenshots!", self.candidate_cache.map[id].id, sequences[id].len());
                 }
                 sequences.remove(id);
             }
@@ -1138,16 +1150,24 @@ impl VideoStore {
 
     // decode data structure from binary stream
     pub fn decode(&mut self, from: &mut std::io::Cursor<Vec<u8>>) {
-        self.num_candidates = crate::marshal::restore_u32(from);
+        if let Some(r) = crate::marshal::restore_u32(from) {
+            self.num_candidates = r;
+        }
         self.ids
             .extend(crate::marshal::restore_hash_string_usize(from));
         self.video_ids
             .extend(crate::marshal::restore_hash_u32_usize(from));
         self.num_indices
             .extend(crate::marshal::restore_hash_u32_usize(from));
-        self.num_index_values = crate::marshal::restore_u32(from);
-        self.sensitivity = crate::marshal::restore_f64(from);
-        self.modified = crate::marshal::restore_bool(from);
+        if let Some(r) = crate::marshal::restore_u32(from) {
+            self.num_index_values = r;
+        }
+        if let Some(r) = crate::marshal::restore_f64(from) {
+            self.sensitivity = r;
+        }
+        if let Some(r) = crate::marshal::restore_bool(from) {
+            self.modified = r;
+        }
         self.modified = false;
     }
 

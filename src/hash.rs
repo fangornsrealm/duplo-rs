@@ -1,45 +1,51 @@
-
 use image::{self, Pixel};
 
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub struct Hash {
     pub matrix: crate::haar::CoefMatrix,
     // Thresholds contains the coefficient threholds. If you discard all
-	// coefficients with abs(coef) < threshold, you end up with TopCoefs
-	// coefficients.
-	pub thresholds: crate::haar::Coef,
+    // coefficients with abs(coef) < threshold, you end up with TopCoefs
+    // coefficients.
+    pub thresholds: crate::haar::Coef,
 
-	// Ratio is image width / image height or 0 if height is 0.
-	pub ratio: f64,
+    // Ratio is image width / image height or 0 if height is 0.
+    pub ratio: f64,
 
-	// DHash is a 128 bit vector where each bit value depends on the monotonicity
-	// of two adjacent pixels. The first 64 bits are based on a 8x8 version of
-	// the Y colour channel. The other two 32 bits are each based on a 8x4 version
-	// of the Cb, and Cr colour channel, respectively.
-	pub dhash: Vec<u64>,
+    // DHash is a 128 bit vector where each bit value depends on the monotonicity
+    // of two adjacent pixels. The first 64 bits are based on a 8x8 version of
+    // the Y colour channel. The other two 32 bits are each based on a 8x4 version
+    // of the Cb, and Cr colour channel, respectively.
+    pub dhash: Vec<u64>,
 
-	// Histogram is histogram quantized into 64 bits (32 for Y and 16 each for
-	// Cb and Cr). A bit is set to 1 if the intensity's occurence count is large
-	// than the median (for that colour channel) and set to 0 otherwise.
-	pub histogram: u64,
+    // Histogram is histogram quantized into 64 bits (32 for Y and 16 each for
+    // Cb and Cr). A bit is set to 1 if the intensity's occurence count is large
+    // than the median (for that colour channel) and set to 0 otherwise.
+    pub histogram: u64,
 
-	// HistoMax is the maximum value of the histogram (for each channel Y, Cb,
-	// and Cr).
-	pub histo_max: Vec<f32>,
+    // HistoMax is the maximum value of the histogram (for each channel Y, Cb,
+    // and Cr).
+    pub histo_max: Vec<f32>,
 }
 
 impl Hash {
     pub fn new() -> Self {
-        let v = Hash {..Default::default()};
+        let v = Hash {
+            ..Default::default()
+        };
         v
     }
 
-    pub fn from(matrix: crate::haar::CoefMatrix, 
-                thresholds: crate::haar::Coef, 
-                ratio: f64, dhash: Vec<u64>, 
-                histogram: u64, 
-                histo_max: Vec<f32>) -> Self {
-        let mut v = Hash {..Default::default()};
+    pub fn from(
+        matrix: crate::haar::CoefMatrix,
+        thresholds: crate::haar::Coef,
+        ratio: f64,
+        dhash: Vec<u64>,
+        histogram: u64,
+        histo_max: Vec<f32>,
+    ) -> Self {
+        let mut v = Hash {
+            ..Default::default()
+        };
         v.matrix = matrix;
         v.thresholds = thresholds;
         v.ratio = ratio;
@@ -61,9 +67,17 @@ impl Hash {
     pub fn decode(&mut self, from: &mut std::io::Cursor<Vec<u8>>) {
         self.matrix.decode(from);
         self.thresholds.decode(from);
-        self.ratio = crate::marshal::restore_f64(from);
+        if let Some(r) = crate::marshal::restore_f64(from) {
+            self.ratio = r;
+        } else {
+            return;
+        }
         self.dhash.extend(crate::marshal::restore_vec_u64(from));
-        self.histogram = crate::marshal::restore_u64(from);
+        if let Some(r) = crate::marshal::restore_u64(from) {
+            self.histogram = r;
+        } else {
+            return;
+        }
         self.histo_max.extend(crate::marshal::restore_vec_f32(from));
     }
 }
@@ -77,7 +91,7 @@ impl Default for Hash {
             dhash: Vec::new(),
             histogram: 0,
             histo_max: Vec::new(),
-       }
+        }
     }
 }
 
@@ -85,16 +99,20 @@ impl Default for Hash {
 /// well as a resized version of it (ImageScale x ImageScale) which may be
 /// ignored if not needed anymore.
 pub fn create_hash(img: &image::RgbaImage) -> (Hash, image::RgbaImage) {
-    let mut h = Hash {..Default::default()};
+    let mut h = Hash {
+        ..Default::default()
+    };
     let mut smallimg = image::RgbaImage::new(1, 1);
     if img.height() == 0 {
         return (h, smallimg);
     }
     h.ratio = (img.width() / img.height()) as f64;
-    smallimg = image::imageops::resize(img, 
-                crate::store::IMAGESCALE, 
-                crate::store::IMAGESCALE, 
-                image::imageops::FilterType::Lanczos3);
+    smallimg = image::imageops::resize(
+        img,
+        crate::store::IMAGESCALE,
+        crate::store::IMAGESCALE,
+        image::imageops::FilterType::Lanczos3,
+    );
     // Then perform a 2D Haar Wavelet transform.
     h.matrix = crate::haar::transform(&smallimg);
     // Find the kth largest coefficients for each colour channel.
@@ -171,9 +189,8 @@ fn ycbcr(color: &image::Rgba<u8>) -> (u8, u8, u8) {
 /// bits correspond to the Cb and Cr colour channels, based on a 8x4 version
 /// each.
 pub fn dhash(img: &image::RgbaImage) -> Vec<u64> {
-    let mut bits =  Vec::from([0,0]);
-    let scaled = image::imageops::resize(img, 8, 8, 
-        image::imageops::FilterType::Lanczos3);
+    let mut bits = Vec::from([0, 0]);
+    let scaled = image::imageops::resize(img, 8, 8, image::imageops::FilterType::Lanczos3);
     // scan the thumbnail
     let mut ypos = 0_usize;
     let mut cbpos = 0_usize;
@@ -189,30 +206,30 @@ pub fn dhash(img: &image::RgbaImage) -> Vec<u64> {
                 }
                 if y & 1 == 0 {
                     let (_, cbbr, crbr) = ycbcr(scaled.get_pixel(x, y + 1));
-                    if (cbbr as u32 + cbtr as u32)>>1 & 0x80 > 0 {
+                    if (cbbr as u32 + cbtr as u32) >> 1 & 0x80 > 0 {
                         bits[1] |= 1 << cbpos;
                         cbpos += 1;
                     }
-                    if (crbr as u32 + crtr as u32)>>1 & 0x80 > 0 {
+                    if (crbr as u32 + crtr as u32) >> 1 & 0x80 > 0 {
                         bits[1] |= 1 << crpos;
                         crpos += 1;
                     }
                 }
             } else {
                 // Use a rough first derivative for the other bits.
-                let (ytl, cbtl, crtl) = ycbcr(scaled.get_pixel(x-1, y));
+                let (ytl, cbtl, crtl) = ycbcr(scaled.get_pixel(x - 1, y));
                 if ytr > ytl {
                     bits[0] |= 1 << ypos;
                     ypos += 1;
                 }
                 if y & 1 == 0 {
                     let (_, cbbr, crbr) = ycbcr(scaled.get_pixel(x, y + 1));
-                    let (_, cbbl, crbl) = ycbcr(scaled.get_pixel(x-1, y + 1));
-                    if (cbbr as u32 + cbtr as u32)>>1 > (cbbl  as u32 + cbtl as u32 )>>1 {
+                    let (_, cbbl, crbl) = ycbcr(scaled.get_pixel(x - 1, y + 1));
+                    if (cbbr as u32 + cbtr as u32) >> 1 > (cbbl as u32 + cbtl as u32) >> 1 {
                         bits[1] |= 1 << cbpos;
                         cbpos += 1;
                     }
-                    if (crbr as u32 + crtr as u32)>>1 > (crbl as u32 + crtl as u32)>>1 {
+                    if (crbr as u32 + crtr as u32) >> 1 > (crbl as u32 + crtl as u32) >> 1 {
                         bits[1] |= 1 << crpos;
                         crpos += 1;
                     }
@@ -228,9 +245,9 @@ fn histogram_median(v: &[i32]) -> (usize, f32) {
     //sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     sorted.sort();
     let length = sorted.len();
-    let half = length/2;
-    if length %2 == 0 {
-        return (half, (sorted[half] + sorted[half+1]) as f32 /2.0);
+    let half = length / 2;
+    if length % 2 == 0 {
+        return (half, (sorted[half] + sorted[half + 1]) as f32 / 2.0);
     } else {
         return (half, sorted[half] as f32);
     }
@@ -241,7 +258,7 @@ fn histogram_median(v: &[i32]) -> (usize, f32) {
 /// set if a histogram value is greater than the median. The Y channel gets 32
 /// bits, the Cb and Cr values each get 16 bits.
 pub fn histogram(img: &image::RgbaImage) -> (u64, Vec<f32>) {
-    let mut bits =  0_u64;
+    let mut bits = 0_u64;
     let mut histo_max = vec![0.0_f32; 64];
     let mut h = vec![0_i32; 64];
 
@@ -256,7 +273,7 @@ pub fn histogram(img: &image::RgbaImage) -> (u64, Vec<f32>) {
             h[index] += 1;
         }
     }
-    
+
     // Calculate medians and maximums.
     let (my, ymax) = histogram_median(&h[0..32]);
     let (mcb, cbmax) = histogram_median(&h[32..48]);

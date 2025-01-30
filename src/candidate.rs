@@ -2,23 +2,27 @@
 pub struct Candidate {
     pub id: String,
     // scaleCoef is the scaling function coefficient, the coefficients at index
-	// (0,0) of the Haar matrix.
+    // (0,0) of the Haar matrix.
     pub scale_coeff: crate::haar::Coef,
     // ratio is image width / image height.
-	pub ratio: f64,
+    pub ratio: f64,
     // The dHash bit vector (see Hash for more information).
-	pub dhash: Vec<u64>,
+    pub dhash: Vec<u64>,
     pub histogram: u64,
     histo_max: Vec<f32>,
 }
 
 impl Candidate {
     pub fn new() -> Self {
-        let v: Candidate = Candidate{..Default::default()};
+        let v: Candidate = Candidate {
+            ..Default::default()
+        };
         v
     }
     pub fn from(id: &str, h: &crate::hash::Hash) -> Self {
-        let mut v: Candidate = Candidate{..Default::default()};
+        let mut v: Candidate = Candidate {
+            ..Default::default()
+        };
         v.id = id.to_string();
         v.ratio = h.ratio;
         v.dhash = h.dhash.clone();
@@ -37,9 +41,17 @@ impl Candidate {
 
     pub fn decode(&mut self, from: &mut std::io::Cursor<Vec<u8>>) {
         self.id = crate::marshal::restore_string(from);
-        self.ratio = crate::marshal::restore_f64(from);
+        if let Some(r) = crate::marshal::restore_f64(from) {
+            self.ratio = r;
+        } else {
+            return;
+        }
         self.dhash.extend(crate::marshal::restore_vec_u64(from));
-        self.histogram = crate::marshal::restore_u64(from);
+        if let Some(r) = crate::marshal::restore_u64(from) {
+            self.histogram = r;
+        } else {
+            return;
+        }
         self.histo_max.extend(crate::marshal::restore_vec_f32(from));
     }
 }
@@ -53,6 +65,6 @@ impl Default for Candidate {
             dhash: Vec::new(),
             histogram: 0,
             histo_max: Vec::new(),
-       }
+        }
     }
 }

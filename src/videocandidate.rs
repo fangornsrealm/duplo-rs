@@ -33,9 +33,15 @@ impl Screenshot {
 
     pub fn decode(&mut self, from: &mut std::io::Cursor<Vec<u8>>) {
         self.id = crate::marshal::restore_string(from);
-        self.video_id = crate::marshal::restore_u32(from);
-        self.screenshot_id = crate::marshal::restore_u32(from);
-        self.timecode = crate::marshal::restore_u32(from);
+        if let Some(r) = crate::marshal::restore_u32(from) {
+            self.video_id = r;
+        } else {return;}
+        if let Some(r) = crate::marshal::restore_u32(from) {
+            self.screenshot_id = r;
+        } else {return;}
+        if let Some(r) = crate::marshal::restore_u32(from) {
+            self.timecode = r;
+        } else {return;}
         self.hash.decode(from);
     }
 }
@@ -91,17 +97,28 @@ impl VideoCandidate {
 
     pub fn decode(&mut self, from: &mut std::io::Cursor<Vec<u8>>) {
         self.id = crate::marshal::restore_string(from);
-        self.index = crate::marshal::restore_u32(from);
-        let s = crate::marshal::restore_usize(from);
-        for _i in 0..s {
-            let mut elem = Screenshot::new();
-            elem.decode(from);
-            self.screenshots.push(elem);
+        if let Some(r) = crate::marshal::restore_u32(from) {
+            self.index = r;
+        } else {return;}
+        if let Some(s) = crate::marshal::restore_usize(from) {
+            for _i in 0..s {
+                let mut elem = Screenshot::new();
+                elem.decode(from);
+                self.screenshots.push(elem);
+            }
         }
-        self.width = crate::marshal::restore_u32(from);
-        self.height = crate::marshal::restore_u32(from);
-        self.runtime = crate::marshal::restore_u32(from);
-        self.framerate = crate::marshal::restore_f32(from);
+        if let Some(r) = crate::marshal::restore_u32(from) {
+            self.width = r;
+        } else {return;}
+        if let Some(r) = crate::marshal::restore_u32(from) {
+            self.height = r;
+        } else {return;}
+        if let Some(r) = crate::marshal::restore_u32(from) {
+            self.runtime = r;
+        } else {return;}
+        if let Some(r) = crate::marshal::restore_f32(from) {
+            self.framerate = r;
+        } else {return;}
     }
 }
 
