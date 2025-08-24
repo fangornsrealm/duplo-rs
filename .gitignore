@@ -3,3 +3,5 @@ testtfiles/*
 Cargo.lock
 *~
 *.bak
+*.store
+*.txt

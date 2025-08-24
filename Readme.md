@@ -6,14 +6,16 @@ It is an implementation of [Fast Multiresolution Image Querying](http://grail.cs
 
 This project started as s re-implementation of [rivo/duplo](https://github.com/rivo/duplo) for the similar image technology that works for millions of images if it is allowed to run for weeks.
 
-[duplo-rs](http://github.com/fangornsrealm/duplo-rs) adds the ability to use the image search on videos and video segments. The video algorithm takes screenshots every 10 seconds and searches similar images for each. A video sequence is considered similar if at least six screenshots in a row match.
+[duplo-rs](http://github.com/fangornsrealm/duplo-rs) adds the ability to use the image search on videos and video segments. The video algorithm takes screenshots every N seconds and searches similar images for each. A video sequence is considered similar if at least S screenshots in a row match.
 
-The user can fine-tune the sensitivity of the search algorithm with a value between 0 and 100.
+The user can fine-tune the sensitivity of the similarity of the screenshots search algorithm with a value between 0 and 100.
 
 - 100 means that only resized images will be seen as similar.
 - 0 means that quite heavy modifications are allowed. Also it means that the center piece of the image can change a lot. For example a model shoot series will detect similar images with different poses of the model. The same setup with a different model might also match.
 
-Make tests which level of sensitivity is *correct* for your use case. Consider allowing more matches (value closer to 0) when searching for videos. The pre-condition that six images in a row have to match is going to erase most of the *accidental* matches.
+The user can also play with the seconds between the screenshots. The example application takes six screenshots per minute of runtime. That is very precise but **extremely** slow! One snapshot per minute might be more appropriate for longer videos. One every five minutes is even faster. But the chance to hit a similar screenshot get much smaller unless you are scanning exactly the same video.
+
+The user can and should also play with the number of frames in a row that have to match. Start with one frame to see how good your image matching parameters work. If you have too many false positives increase the sequence length.
 
 ## Examples
 
@@ -39,14 +41,14 @@ cargo build --release --example demo_similar_videos
 
 This application reads every video in the directory or directory tree and compares it to the already read videos. The recent video is stored in the database so it doesn't have to be parsed again. When running the program again, the already read files are checked and the deleted files are removed from the database. For each new video it compares the screenshots with previously read videos. If it finds matches it exports a HTML file with previews and metadata into the directory `similar_videos` with the name of the new video. As there is no clear criterum no files are deleted. The users have to review the matches and decide for themselves.
 
-The storage is persistent. So you can run the app again, using the same or a different start path.
+The storage is persistent. So you can run the app again, using the same or a different start path. Theoretically you could change the settings as well. And for the sensitivity and sequence length you can as they only influence the comparison result. But the decision on the time between the screenshots has to be fixed so the comparison partners exist.
 
 ## Usage
 
 Include this in your Cargo.toml.
 
 ```toml
-duplo-rs = "1.0.0"
+duplo-rs = { path = "../duplo-rs", version = "1.0.0" }
 ```
 
 Then call the library like this to search for images:
