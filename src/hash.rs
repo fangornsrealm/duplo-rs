@@ -80,6 +80,37 @@ impl Hash {
         }
         self.histo_max.extend(crate::marshal::restore_vec_f32(from));
     }
+
+    /// Compact encoding: everything *except* the large `CoefMatrix`.
+    /// This is the format persisted in the SQLite BLOB — the matrix is
+    /// only needed to derive the significant bucket locations at `add()`
+    /// time and is dead weight thereafter (~400 KB/screenshot).
+    pub fn encode_compact(&self, to: &mut Vec<u8>) {
+        self.thresholds.encode(to);
+        crate::marshal::store_f64(self.ratio, to);
+        crate::marshal::store_vec_u64(&self.dhash, to);
+        crate::marshal::store_u64(self.histogram, to);
+        crate::marshal::store_vec_f32(&self.histo_max, to);
+    }
+
+    /// Decode a compact hash (no matrix). The `matrix` field is left empty;
+    /// callers that need it (e.g. re-deriving bucket locations) should
+    /// decode from the full format or recompute via `create_hash`.
+    pub fn decode_compact(&mut self, from: &mut std::io::Cursor<Vec<u8>>) {
+        self.thresholds.decode(from);
+        if let Some(r) = crate::marshal::restore_f64(from) {
+            self.ratio = r;
+        } else {
+            return;
+        }
+        self.dhash.extend(crate::marshal::restore_vec_u64(from));
+        if let Some(r) = crate::marshal::restore_u64(from) {
+            self.histogram = r;
+        } else {
+            return;
+        }
+        self.histo_max.extend(crate::marshal::restore_vec_f32(from));
+    }
 }
 
 impl Default for Hash {

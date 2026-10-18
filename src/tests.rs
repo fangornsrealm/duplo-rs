@@ -1057,3 +1057,264 @@ fn test_video_end_to_end_ffmpeg() {
     // Clean up.
     std::fs::remove_dir_all(&tmp_dir).ok();
 }
+
+// ---------------------------------------------------------------------------
+// Compact storage: roundtrip + v1 vs v2 blob size + decode_any handles both.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_compact_storage_roundtrip() {
+    use base64::{engine::general_purpose, Engine as _};
+
+    let bytes_a = general_purpose::STANDARD.decode(IMGA.as_bytes()).unwrap();
+    let img_a = image::load_from_memory_with_format(&bytes_a, image::ImageFormat::Jpeg).unwrap();
+    let (hash_a, _) = crate::hash::create_hash(&img_a.into());
+
+    let bytes_b = general_purpose::STANDARD.decode(IMGB.as_bytes()).unwrap();
+    let img_b = image::load_from_memory_with_format(&bytes_b, image::ImageFormat::Jpeg).unwrap();
+    let (hash_b, _) = crate::hash::create_hash(&img_b.into());
+
+    // --- 1. Compact roundtrip of a single hash. ---
+    let mut compact_bytes = Vec::new();
+    hash_a.encode_compact(&mut compact_bytes);
+
+    let mut decoded = crate::hash::Hash::new();
+    decoded.decode_compact(&mut std::io::Cursor::new(compact_bytes.clone()));
+
+    assert_eq!(
+        decoded.dhash, hash_a.dhash,
+        "dhash must survive compact roundtrip"
+    );
+    assert_eq!(
+        decoded.histogram, hash_a.histogram,
+        "histogram must survive compact roundtrip"
+    );
+    assert!(
+        (decoded.ratio - hash_a.ratio).abs() < 1e-9,
+        "ratio must survive compact roundtrip"
+    );
+    for ch in 0..3 {
+        assert!(
+            (decoded.thresholds.c[ch] - hash_a.thresholds.c[ch]).abs() < 1e-9,
+            "threshold[{}] must survive compact roundtrip",
+            ch
+        );
+    }
+    assert!(
+        decoded.matrix.coefs.is_empty(),
+        "compact decode must leave the matrix empty"
+    );
+
+    // --- 2. v1 vs v2 blob size: compact should be far smaller. ---
+    let make_video = |id: &str, idx: u32, hash: &crate::hash::Hash| {
+        let mut v = crate::videocandidate::VideoCandidate::from(id, idx as usize);
+        v.width = 64;
+        v.height = 64;
+        v.runtime = 80;
+        for shot in 0..8u32 {
+            v.screenshots.push(crate::videocandidate::Screenshot::from(
+                id,
+                idx as usize,
+                shot as usize,
+                shot * 10,
+                hash,
+            ));
+        }
+        v
+    };
+
+    let va = make_video("/tmp/compact_a", 1, &hash_a);
+    let vb = make_video("/tmp/compact_b", 2, &hash_b);
+
+    let mut v1_bytes = Vec::new();
+    va.encode(&mut v1_bytes);
+    let mut v2_bytes = Vec::new();
+    va.encode_compact(&mut v2_bytes);
+
+    assert!(
+        v2_bytes.len() < v1_bytes.len() / 10,
+        "compact blob ({}) should be at least 10x smaller than v1 ({})",
+        v2_bytes.len(),
+        v1_bytes.len()
+    );
+
+    // --- 3. decode_any handles both formats. ---
+    let mut from_v1 = crate::videocandidate::VideoCandidate::new();
+    from_v1.decode_any(&mut std::io::Cursor::new(v1_bytes.clone()));
+    assert_eq!(from_v1.screenshots.len(), 8, "v1 decode_any: 8 screenshots");
+    assert!(
+        !from_v1.screenshots[0].hash.matrix.coefs.is_empty(),
+        "v1: matrix present"
+    );
+
+    let mut from_v2 = crate::videocandidate::VideoCandidate::new();
+    from_v2.decode_any(&mut std::io::Cursor::new(v2_bytes.clone()));
+    assert_eq!(from_v2.screenshots.len(), 8, "v2 decode_any: 8 screenshots");
+    assert!(
+        from_v2.screenshots[0].hash.matrix.coefs.is_empty(),
+        "v2: matrix empty"
+    );
+
+    assert_eq!(
+        from_v1.screenshots[0].hash.dhash, from_v2.screenshots[0].hash.dhash,
+        "dhash identical in v1 and v2"
+    );
+    assert_eq!(
+        from_v1.screenshots[0].hash.histogram, from_v2.screenshots[0].hash.histogram,
+        "histogram identical in v1 and v2"
+    );
+
+    // --- 4. add() (now v2) → query still works. ---
+    let conn = crate::videostore::connect(":memory:").unwrap();
+    let store = crate::videostore::VideoStore::new(conn, -20.0, "/tmp", 1, 10, 6, 10);
+
+    store.add("/tmp/compact_a", &va, va.runtime);
+    store.add("/tmp/compact_b", &vb, vb.runtime);
+    assert_eq!(store.size(), 2);
+
+    let (num_shots, num_bucket_entries) = store.debug_index_stats();
+    assert_eq!(num_shots, 16, "8 shots × 2 videos = 16");
+    assert!(num_bucket_entries > 0, "index must have bucket entries");
+
+    let matches = store.query(&va);
+    assert!(
+        matches.m.iter().any(|m| m.id == "/tmp/compact_a"),
+        "self-query after compact add should find /tmp/compact_a; got {:?}",
+        matches.m.iter().map(|m| &m.id).collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Migration: a v1 blob (full matrix) is re-encoded to v2 (compact) when the
+// store is opened.
+//
+// Strategy:
+//   1. Create a store and add a video (properly populates the index table).
+//   2. Overwrite the stored blob with a v1 (full-matrix) version and reset
+//      schema_version to 1, simulating an un-migrated database.
+//   3. Reopen the store — migration should detect the v1 blob, re-encode it
+//      to v2, and set schema_version to 2.
+//   4. Verify: blob is v2, query still works, idempotent on second open.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_migration_v1_to_v2() {
+    use base64::{engine::general_purpose, Engine as _};
+    use rusqlite::{params, Connection};
+
+    let bytes_a = general_purpose::STANDARD.decode(IMGA.as_bytes()).unwrap();
+    let img_a = image::load_from_memory_with_format(&bytes_a, image::ImageFormat::Jpeg).unwrap();
+    let (hash_a, _) = crate::hash::create_hash(&img_a.into());
+
+    let mut va = crate::videocandidate::VideoCandidate::from("/tmp/mig_a", 1);
+    va.width = 64;
+    va.height = 64;
+    va.runtime = 80;
+    for shot in 0..8u32 {
+        va.screenshots.push(crate::videocandidate::Screenshot::from(
+            "/tmp/mig_a",
+            1,
+            shot as usize,
+            shot * 10,
+            &hash_a,
+        ));
+    }
+
+    let dbpath = std::env::temp_dir().join(format!("duplo_mig_{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&dbpath);
+    let _ = std::fs::remove_file(&dbpath.with_extension("db-wal"));
+    let _ = std::fs::remove_file(&dbpath.with_extension("db-shm"));
+
+    // Step 1: Create a store and add the video (properly populates the index).
+    {
+        let conn = crate::videostore::connect(dbpath.to_str().unwrap()).unwrap();
+        let store = crate::videostore::VideoStore::new(conn, -20.0, "/tmp", 1, 10, 6, 10);
+        store.add("/tmp/mig_a", &va, va.runtime);
+        assert_eq!(store.size(), 1);
+        drop(store);
+    }
+
+    // Step 2: Overwrite the blob with a v1 (full-matrix) version and reset
+    // schema_version to 1, simulating an un-migrated database.
+    let v1_blob = {
+        let mut v1 = Vec::new();
+        va.encode(&mut v1);
+        assert!(
+            v1.first() != Some(&2),
+            "v1 blob must NOT start with the v2 marker byte"
+        );
+        {
+            let conn2 = Connection::open(dbpath.to_str().unwrap()).unwrap();
+            conn2
+                .execute(
+                    "UPDATE videostore_candidates SET data = ?1 WHERE filename = '/tmp/mig_a'",
+                    params![&v1],
+                )
+                .unwrap();
+            conn2
+                .execute("UPDATE videostore_parameters SET schema_version = 1", [])
+                .unwrap();
+        }
+        v1
+    };
+
+    // Step 3: Reopen the store — migration should detect the v1 blob and
+    // re-encode it to v2, then set schema_version to 2.
+    let conn3 = crate::videostore::connect(dbpath.to_str().unwrap()).unwrap();
+    let store = crate::videostore::VideoStore::new(conn3, -20.0, "/tmp", 1, 10, 6, 10);
+    assert_eq!(store.size(), 1, "store should have 1 video after migration");
+
+    // Verify: the blob is now v2 (first byte == 2) and smaller, schema_version is 2.
+    {
+        let conn4 = Connection::open(dbpath.to_str().unwrap()).unwrap();
+        let blob: Vec<u8> = conn4
+            .query_row(
+                "SELECT data FROM videostore_candidates WHERE filename = '/tmp/mig_a'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            blob.first(),
+            Some(&2),
+            "blob should have been migrated to v2 (first byte == 2)"
+        );
+        assert!(
+            blob.len() < v1_blob.len(),
+            "migrated blob ({}) should be smaller than v1 ({})",
+            blob.len(),
+            v1_blob.len()
+        );
+        let version: i64 = conn4
+            .query_row(
+                "SELECT COALESCE(MAX(schema_version), 0) FROM videostore_parameters",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, 2, "schema_version should be 2 after migration");
+    }
+
+    // Verify: query still works (index was built from the index table, not the blob).
+    let matches = store.query(&va);
+    assert!(
+        matches.m.iter().any(|m| m.id == "/tmp/mig_a"),
+        "self-query after migration should find /tmp/mig_a; got {:?}",
+        matches.m.iter().map(|m| &m.id).collect::<Vec<_>>()
+    );
+
+    // Step 4: Open again — migration should be a no-op (idempotent).
+    drop(store);
+    let conn5 = crate::videostore::connect(dbpath.to_str().unwrap()).unwrap();
+    let store2 = crate::videostore::VideoStore::new(conn5, -20.0, "/tmp", 1, 10, 6, 10);
+    assert_eq!(store2.size(), 1);
+    let matches2 = store2.query(&va);
+    assert!(
+        matches2.m.iter().any(|m| m.id == "/tmp/mig_a"),
+        "second open should also find the migrated video"
+    );
+    drop(store2);
+
+    // Clean up.
+    let _ = std::fs::remove_file(&dbpath);
+    let _ = std::fs::remove_file(&dbpath.with_extension("db-wal"));
+    let _ = std::fs::remove_file(&dbpath.with_extension("db-shm"));
+}

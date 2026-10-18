@@ -671,30 +671,32 @@ impl VideoStoreInner {
     /// Bulk-load the in-memory index from the database.
     ///
     /// This is called once at startup (in `new()`) and after any `slurp_binary`.
-    /// It streams the candidate blobs to extract per-screenshot metadata
-    /// (dhash, histogram, ratio, timecode) and streams the `videostore_indices`
-    /// table to build the bucket structure. After this call, `search_matches`
-    /// and `rate_match` no longer need to hit SQLite for the hot path.
+    /// It streams the candidate blobs (compact, no matrix) to extract per-screenshot
+    /// metadata (dhash, histogram, ratio, timecode), then reads the
+    /// `videostore_indices` table to build the bucket structure. After this call,
+    /// `search_matches` and `rate_match` no longer need to hit SQLite for the hot path.
     ///
-    /// The method is `O(total_screenshots)` and allocates a few hundred MB for a
-    /// 10k-video corpus. It is intentionally a one-shot, not a per-query cost.
+    /// The method is `O(total_screenshots + total_index_entries)` and is
+    /// intentionally a one-shot, not a per-query cost.
     pub fn bulk_load_index(&mut self, connection: &mut rusqlite::Connection) {
         let mut idx = InMemoryIndex::default();
         idx.buckets = vec![Vec::new(); (INDICESMAX as usize) + 1];
 
         // Build a reverse lookup candidate_id -> filename from self.ids,
-        // which `new()` already populated. This avoids a second DB hit for
-        // the filename.
+        // which `new()` already populated.
         let id_by_candidate: std::collections::BTreeMap<u32, String> = self
             .ids
             .iter()
             .filter_map(|(filename, candidate_idx)| {
-                // self.ids maps filename -> candidate_id - 1 (see `new()`),
-                // so recover the 1-based candidate_id.
                 let candidate_id = *candidate_idx as u32 + 1;
                 Some((candidate_id, filename.clone()))
             })
             .collect();
+
+        // Phase 1: read candidate blobs to get per-screenshot metadata and video info.
+        // Build a lookup from (filename, screenshot_id) -> global screenshot index.
+        let mut shot_lookup: std::collections::HashMap<(String, u32), u32> =
+            std::collections::HashMap::new();
 
         let query = "SELECT candidate_id, data FROM videostore_candidates ORDER BY candidate_id";
         match connection.prepare(query) {
@@ -717,7 +719,8 @@ impl VideoStoreInner {
                                 }
                             };
                             let mut candidate = crate::videocandidate::VideoCandidate::new();
-                            candidate.decode(&mut std::io::Cursor::new(blob));
+                            // decode_any handles both v1 (with matrix) and v2 (compact) blobs.
+                            candidate.decode_any(&mut std::io::Cursor::new(blob));
 
                             let video_pos = idx.metas.len() as u32;
                             let filename = id_by_candidate
@@ -726,7 +729,7 @@ impl VideoStoreInner {
                                 .unwrap_or_else(|| candidate.id.clone());
                             idx.metas.push(VideoMeta {
                                 candidate_id,
-                                id: filename,
+                                id: filename.clone(),
                                 runtime: candidate.runtime,
                                 width: candidate.width,
                                 height: candidate.height,
@@ -745,9 +748,7 @@ impl VideoStoreInner {
                                     histogram: shot.hash.histogram,
                                     ratio: shot.hash.ratio,
                                 });
-                                for (location, _bin) in Self::hash_bucket_locations(&shot.hash) {
-                                    idx.buckets[location as usize].push(g);
-                                }
+                                shot_lookup.insert((filename.clone(), shot.screenshot_id), g);
                             }
                         }
                         Ok(None) => break,
@@ -768,6 +769,45 @@ impl VideoStoreInner {
             }
         }
 
+        // Phase 2: read the index table to build the bucket structure.
+        // This replaces the old approach of re-deriving locations from the
+        // (now absent) Haar matrix in each blob.
+        let idx_query = "SELECT location, filename, screenshot_id FROM videostore_indices";
+        match connection.prepare(idx_query) {
+            Ok(mut statement) => match statement.query(params![]) {
+                Ok(mut rows) => loop {
+                    match rows.next() {
+                        Ok(Some(row)) => {
+                            let location: u32 = match row.get(0) {
+                                Ok(v) => v,
+                                Err(_) => continue,
+                            };
+                            let filename: String = match row.get(1) {
+                                Ok(v) => v,
+                                Err(_) => continue,
+                            };
+                            let screenshot_id: u32 = match row.get(2) {
+                                Ok(v) => v,
+                                Err(_) => continue,
+                            };
+                            if let Some(&g) = shot_lookup.get(&(filename, screenshot_id)) {
+                                if (location as usize) < idx.buckets.len() {
+                                    idx.buckets[location as usize].push(g);
+                                }
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            log::error!("bulk_load_index: index row: {}", e);
+                            break;
+                        }
+                    }
+                },
+                Err(e) => log::error!("bulk_load_index: index query: {}", e),
+            },
+            Err(e) => log::error!("bulk_load_index: index prepare: {}", e),
+        }
+
         idx.num_screenshots = idx.screenshots.len() as u32;
         log::warn!(
             "bulk_load_index: {} candidates, {} screenshots, {} bucket slots",
@@ -781,11 +821,26 @@ impl VideoStoreInner {
     /// Append a single candidate to the in-memory index. Called from `add()`
     /// after the SQLite insert succeeds, so the in-memory view and the DB stay
     /// in lock-step.
+    ///
+    /// **Precondition:** `video` must carry the *full* Haar matrix in each
+    /// screenshot's hash. `hash_bucket_locations` reads
+    /// `hash.matrix.coefs` to derive the significant bucket locations; a
+    /// compact-decoded candidate (which omits the matrix) would silently
+    /// produce an empty index entry. In practice this is safe because
+    /// `append_index` is only called from `add()`, which receives the
+    /// original in-memory `VideoCandidate` before the matrix is dropped.
     pub fn append_index(
         &mut self,
         video: &crate::videocandidate::VideoCandidate,
         candidate_id: u32,
     ) {
+        debug_assert!(
+            video
+                .screenshots
+                .iter()
+                .all(|s| !s.hash.matrix.coefs.is_empty()),
+            "append_index requires the full Haar matrix; got a compact candidate"
+        );
         let video_pos = self.index.metas.len() as u32;
         self.index.metas.push(VideoMeta {
             candidate_id,
@@ -809,6 +864,8 @@ impl VideoStoreInner {
                 histogram: shot.hash.histogram,
                 ratio: shot.hash.ratio,
             });
+            // Derives significant locations from the full matrix (available
+            // only because the caller passed the original in-memory candidate).
             for (location, _bin) in Self::hash_bucket_locations(&shot.hash) {
                 self.index.buckets[location as usize].push(g);
             }
@@ -838,12 +895,15 @@ impl VideoStoreInner {
             return;
         }
         let candidate_id = self.num_candidates + 1;
+        // Store the compact format (no Haar matrix) to save ~400 KB/screenshot.
+        // The matrix is only needed to derive bucket locations at add() time,
+        // which we do below from the in-memory hash before it's dropped.
         let mut blob = Vec::new();
-        video.encode(&mut blob);
+        video.encode_compact(&mut blob);
         log::warn!(
-            "Inserting Video information of length {} and data size of {} MegaBytes",
+            "Inserting Video information of length {} and data size of {} KB",
             video.runtime,
-            blob.len() / 1024 / 1024
+            blob.len() / 1024
         );
 
         let tx = match connection.transaction() {
@@ -869,47 +929,30 @@ impl VideoStoreInner {
             }
         }
 
+        // Derive each screenshot's significant bucket locations ONCE here, while
+        // the in-memory hash still carries the full matrix. The persisted blob
+        // (compact, no matrix) cannot re-derive these, so this is the single
+        // place the matrix matters after `add()` begins.
         for i in 0..video.screenshots.len() {
-            let hash = &video.screenshots[i].hash;
-            if hash.matrix.coefs.len() < 2 {
-                continue;
-            }
-            for coefindex in 1..hash.matrix.coefs.len() {
-                let coef = &hash.matrix.coefs[coefindex];
-                for colorindex in 0..coef.c.len() {
-                    let colorcoef = coef.c[colorindex];
-                    if !crate::hash::coefficient_is_significant(
-                        colorcoef,
-                        hash.thresholds.c[colorindex],
-                    ) {
-                        continue;
-                    }
-                    let mut sign = 0;
-                    if colorcoef < 0.0 {
-                        sign = 1;
-                    }
-                    let location = sign * IMAGESCALE * IMAGESCALE * crate::haar::COLOURCHANNELS
-                        + coefindex as u32 * crate::haar::COLOURCHANNELS
-                        + colorindex as u32
-                        + 1;
-                    if !self.num_indices.contains_key(&location) {
-                        self.num_indices.insert(location, 0);
-                    }
-                    let arrayindex = self.num_indices[&location] as u32 + 1;
-                    let index_id = self.num_index_values + 1;
-                    match tx.execute(
-                        "INSERT INTO videostore_indices (index_id, location, arrayindex, filename, video_id, screenshot_id, runtime) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                        params![&index_id, location, &arrayindex, &video.id, &video.index, &video.screenshots[i].screenshot_id, &video.runtime],
-                    ) {
-                        Ok(_retval) => {}
-                        Err(error) => {
-                            log::error!("Failed to insert index for video {}: {}", video.id, error);
-                            return;
-                        }
-                    }
-                    *self.num_indices.get_mut(&location).unwrap() += 1;
-                    self.num_index_values += 1;
+            let screenshot_id = video.screenshots[i].screenshot_id;
+            for (location, _bin) in Self::hash_bucket_locations(&video.screenshots[i].hash) {
+                if !self.num_indices.contains_key(&location) {
+                    self.num_indices.insert(location, 0);
                 }
+                let arrayindex = self.num_indices[&location] as u32 + 1;
+                let index_id = self.num_index_values + 1;
+                match tx.execute(
+                    "INSERT INTO videostore_indices (index_id, location, arrayindex, filename, video_id, screenshot_id, runtime) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![&index_id, location, &arrayindex, &video.id, &video.index, &screenshot_id, &video.runtime],
+                ) {
+                    Ok(_retval) => {}
+                    Err(error) => {
+                        log::error!("Failed to insert index for video {}: {}", video.id, error);
+                        return;
+                    }
+                }
+                *self.num_indices.get_mut(&location).unwrap() += 1;
+                self.num_index_values += 1;
             }
         }
 
@@ -1332,7 +1375,7 @@ impl VideoStoreInner {
                         if let Ok(Some(row)) = rows.next() {
                             candidate_id = row.get(0).unwrap_or(0);
                             if let Ok(blob) = row.get::<_, Vec<u8>>(1) {
-                                v.decode(&mut std::io::Cursor::new(blob));
+                                v.decode_any(&mut std::io::Cursor::new(blob));
                             }
                         }
                     }
@@ -1579,10 +1622,137 @@ impl VideoStore {
         };
         // `new()` already called bulk_load_index internally.
         let _ = &mut inner;
-        VideoStore {
+        let store = VideoStore {
             inner: RwLock::new(inner),
             conn,
+        };
+        // Migrate existing v1 blobs (full matrix) to v2 compact format.
+        // This is a no-op if the database already has the `schema_version`
+        // column set to >= 2, or if the table is empty.
+        store.migrate_to_compact_storage();
+        store
+    }
+
+    /// Migrate the database from v1 (full Haar matrix per screenshot, ~400 KB)
+    /// to v2 (compact, no matrix, ~2 KB per screenshot). Idempotent: safe to
+    /// call multiple times.
+    ///
+    /// The `videostore_indices` table already stores the derived bucket
+    /// locations, so no index re-computation is needed. We simply re-encode
+    /// each `videostore_candidates.data` BLOB from v1 to v2.
+    fn migrate_to_compact_storage(&self) {
+        let mut conn_guard = self.conn.lock().unwrap();
+
+        // Check if schema_version column exists.
+        let has_version_col: bool = conn_guard
+            .prepare("SELECT name FROM pragma_table_info('videostore_parameters') WHERE name = 'schema_version'")
+            .and_then(|mut stmt| stmt.exists(params![]))
+            .unwrap_or(false);
+
+        if !has_version_col {
+            let _ = conn_guard.execute(
+                "ALTER TABLE videostore_parameters ADD COLUMN schema_version BIGINT DEFAULT 1",
+                (),
+            );
+            // Mark all existing rows as v1.
+            let _ = conn_guard.execute(
+                "UPDATE videostore_parameters SET schema_version = 1 WHERE schema_version IS NULL",
+                (),
+            );
         }
+
+        let current_version: i64 = conn_guard
+            .query_row(
+                "SELECT COALESCE(MAX(schema_version), 1) FROM videostore_parameters",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(1);
+
+        if current_version >= 2 {
+            return; // Already migrated.
+        }
+
+        // Re-encode all v1 blobs to v2 compact format.
+        let count: i64 = conn_guard
+            .query_row("SELECT COUNT(*) FROM videostore_candidates", [], |r| {
+                r.get(0)
+            })
+            .unwrap_or(0);
+
+        if count == 0 {
+            // Nothing to migrate; just bump the version.
+            let _ = conn_guard.execute("UPDATE videostore_parameters SET schema_version = 2", ());
+            return;
+        }
+
+        log::warn!(
+            "Migrating {} candidate blob(s) from v1 to v2 compact format…",
+            count
+        );
+
+        let tx = match conn_guard.transaction() {
+            Ok(tx) => tx,
+            Err(e) => {
+                log::error!("Migration: failed to begin transaction: {}", e);
+                return;
+            }
+        };
+
+        // Read all candidate IDs and their blobs, re-encode, and write back.
+        let mut rows: Vec<(i64, Vec<u8>)> = Vec::new();
+        {
+            let stmt = tx
+                .prepare("SELECT candidate_id, data FROM videostore_candidates")
+                .ok();
+            if let Some(mut stmt) = stmt {
+                if let Ok(rows_iter) = stmt.query_map(params![], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+                }) {
+                    for row in rows_iter.flatten() {
+                        rows.push(row);
+                    }
+                }
+            }
+        }
+
+        let mut migrated = 0;
+        for (candidate_id, blob) in &rows {
+            // Detect v1: first byte is NOT 2 (v2 marker).
+            if blob.first() == Some(&2) {
+                continue; // Already v2.
+            }
+            // Decode v1 (full format), re-encode as v2 (compact).
+            let mut candidate = crate::videocandidate::VideoCandidate::new();
+            candidate.decode(&mut std::io::Cursor::new(blob.clone()));
+            let mut compact = Vec::new();
+            candidate.encode_compact(&mut compact);
+            if let Err(e) = tx.execute(
+                "UPDATE videostore_candidates SET data = ?1 WHERE candidate_id = ?2",
+                params![&compact, candidate_id],
+            ) {
+                log::error!(
+                    "Migration: failed to update candidate {}: {}",
+                    candidate_id,
+                    e
+                );
+                continue;
+            }
+            migrated += 1;
+        }
+
+        // Bump the schema version.
+        let _ = tx.execute("UPDATE videostore_parameters SET schema_version = 2", ());
+
+        if let Err(e) = tx.commit() {
+            log::error!("Migration: failed to commit: {}", e);
+            return;
+        }
+
+        log::warn!(
+            "Migration complete: {} blob(s) re-encoded to compact format",
+            migrated
+        );
     }
 
     /// Run a similarity query. Takes a read lock, so many can run in parallel.

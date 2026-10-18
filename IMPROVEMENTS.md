@@ -21,7 +21,7 @@ Impact legend: **[H]**igh · **[M]**edium · **[L]**ow. Effort: **S** ≤ ~1 hr,
 | §10 | `VideoMatches::sort` → `sort_by` | ✅ Done | `e21fe3c` |
 | §13 | Remove `process::exit(2)` / `panic!` in presentation | ✅ Done | `e21fe3c` |
 | §14 | Video test suite (7 new tests) + 3 bug fixes | ✅ Done | `bd70469` |
-| §1 | Compact per-screenshot storage (~200× BLOB reduction) | ⏳ Next | — |
+| §1 | Compact per-screenshot storage (~200× BLOB reduction) + migration | ✅ Done | pending |
 | §12 | Remove vestigial state (`candidate_cache`, `num_indices`, …) | ⏳ | — |
 | §7 | Cache significant-location list per hash | ⏳ (likely) | — |
 | §8 | `delete` incremental instead of full rebuild | ⏳ | — |

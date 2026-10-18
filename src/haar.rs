@@ -51,6 +51,9 @@ impl Coef {
     }
 
     pub fn decode(&mut self, from: &mut std::io::Cursor<Vec<u8>>) {
+        // Clear first so decode is idempotent (a fresh `default()` starts with
+        // three zeros, and `extend` alone would leave stale entries behind).
+        self.c.clear();
         self.c.extend(crate::marshal::restore_vec_f64(from));
     }
 }
@@ -89,6 +92,9 @@ impl CoefMatrix {
     }
 
     pub fn decode(&mut self, from: &mut std::io::Cursor<Vec<u8>>) {
+        // Clear first so decode is idempotent (re-decoding the same stream into
+        // a non-empty matrix would otherwise duplicate every coefficient).
+        self.coefs.clear();
         if let Some(s) = crate::marshal::restore_usize(from) {
             for _i in 0..s {
                 let mut elem = Coef {
