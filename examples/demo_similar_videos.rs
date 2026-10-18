@@ -5,7 +5,6 @@ use simplelog::{ColorChoice, CombinedLogger, Config, TermLogger, TerminalMode, W
 use std::fs::File;
 
 use std::sync::mpsc;
-use std::thread;
 
 /// Searches for similar videos inside a directory or optionally also all it's subdirectories
 ///
@@ -166,9 +165,9 @@ pub fn main() {
     let dbpathstr = duplo_rs::files::osstring_to_string(dbpath.as_os_str());
     let sql_client_opt = duplo_rs::videostore::connect(&dbpathstr);
     if sql_client_opt.is_ok() {
-        let mut sql_client = sql_client_opt.unwrap();
-        let mut store = duplo_rs::videostore::VideoStore::new(
-            &mut sql_client,
+        let sql_client = sql_client_opt.unwrap();
+        let store = duplo_rs::videostore::VideoStore::new(
+            sql_client,
             sensitivity,
             &directory,
             num_threads,
@@ -176,87 +175,140 @@ pub fn main() {
             min_similar_screenshots_in_sequence,
             max_candidates_in_cache,
         );
-        
+        let store = std::sync::Arc::new(store);
+
         let num_videos = filelist.len() as u32;
-        //let prev_videos = store.num_candidates;
-        let mut video_id_counter = store.num_candidates + 1;
-        let mut filepos = 0;
-        'outer: loop {
-            let mut handles = vec![];
-            let (tx, rx) = mpsc::channel();
-            
-            for _ in 0..store.num_threads {
-                if filepos + 1 > num_videos {
-                    progressbar.finish();
-                    break 'outer;
+        let starting_candidate = store.num_candidates();
+        let num_query_workers = (num_threads.max(1)) as usize;
+
+        // Shared receiver (Mutex) so multiple query workers can pull work.
+        let (parse_tx, parse_rx) = mpsc::sync_channel::<(u32, duplo_rs::videocandidate::VideoCandidate)>(num_query_workers * 2);
+        let parse_rx = std::sync::Arc::new(std::sync::Mutex::new(parse_rx));
+        // Results from query workers to the single writer.
+        let (result_tx, result_rx) = mpsc::channel::<(duplo_rs::videocandidate::VideoCandidate, duplo_rs::videomatches::VideoMatches)>();
+        let result_rx = std::sync::Arc::new(std::sync::Mutex::new(result_rx));
+
+        let filelist = std::sync::Arc::new(filelist);
+
+        // ------------------------------------------------------------------
+        // Producer: walks the file list, spawns ffmpeg workers (bounded by
+        // num_threads), and feeds parsed videos into the shared parse_rx.
+        // ------------------------------------------------------------------
+        {
+            let parse_tx = parse_tx.clone();
+            let filelist = filelist.clone();
+            let store = store.clone();
+            let mut video_id_counter = starting_candidate + 1;
+            let mut in_flight = 0usize;
+            let mut handles: std::collections::VecDeque<std::thread::JoinHandle<()>> = std::collections::VecDeque::new();
+            let mut filepos = 0usize;
+
+            loop {
+                // Reap finished workers so we keep at most num_threads in flight.
+                while in_flight as u32 > num_threads {
+                    if let Some(front) = handles.pop_front() {
+                        let _ = front.join();
+                        in_flight -= 1;
+                    } else {
+                        break;
+                    }
                 }
 
-                let video_id = video_id_counter;
-                let filepath = filelist[filepos as usize].clone();
+                if filepos >= filelist.len() {
+                    // Drain any in-flight workers before exiting.
+                    while let Some(front) = handles.pop_front() {
+                        let _ = front.join();
+                    }
+                    break;
+                }
+
+                let filepath = filelist[filepos].clone();
                 let filestring = duplo_rs::files::osstring_to_string(&filepath.as_os_str());
-                if store.ids.contains_key(&filestring) {
-                    filepos += 1;
+                let next_pos = filepos + 1;
+                filepos = next_pos;
+
+                if store.ids_lookup(&filestring).is_some() {
                     progressbar.inc();
                     continue;
                 }
-                video_id_counter += 1;
-                let tx1 = mpsc::Sender::clone(&tx);
-                let handle = thread::spawn(move || {
-                    // call function with
-                    // sender as parameter
-                    parallel_processor(tx1, &filepath, video_id, num_videos, store.num_seconds_between_screenshots, filepos + 1);
-                });
-                filepos += 1;
-                handles.push(handle);
-            }
-            for _ in 0..handles.len() {
-                let video_opt = rx.recv();
-                if video_opt.is_err() {
-                    log::error!("Failed to receive video data.");
-                    continue;
-                }
-                let video = video_opt.unwrap();
 
-                let (videomatches, _failedid, _failedhash) = duplo_rs::files::find_similar_videos(
-                    &mut store,
-                    &mut sql_client,
-                    &video.id,
-                    &video,
-                );
-                log::warn!("Found {} matches for video {}.", videomatches.len(), video.id);
-                progressbar.inc();
-                let mut compare: Vec<duplo_rs::videocandidate::VideoCandidate> = Vec::new();
-                compare.push(video.clone());
-                for i in 0..videomatches.m.len() {
-                    log::warn!("Match {} is similar to {}.", videomatches.m[i].id, video.id);
-                    let index = store.ids[&videomatches.m[i].id];
-                    let (_, candidate) = store.return_candidate(&mut sql_client, index as u32);
-                    compare.push(candidate);
-                }
-                // add the current file to the store
-                store.add(&mut sql_client, &video.id, &video, video.runtime);
-                duplo_rs::files::present_video_matches(&dst, &compare);
-                for handlepos in (0..handles.len()).rev() {
-                    if handles[handlepos].is_finished() {
-                        handles.remove(handlepos);
+                let video_id = video_id_counter;
+                video_id_counter += 1;
+                let num_seconds = store.num_seconds_between_screenshots();
+                let tx = parse_tx.clone();
+                let handle = std::thread::spawn(move || {
+                    let video = duplo_rs::files::process_video(&filepath, video_id as usize, num_videos, num_seconds, next_pos as u32);
+                    let _ = tx.send((video_id, video));
+                });
+                in_flight += 1;
+                handles.push_back(handle);
+            }
+        }
+        // Drop the producer's sender so workers see EOF.
+        drop(parse_tx);
+
+        // ------------------------------------------------------------------
+        // Query workers: pull from the shared parse_rx, run store.query
+        // (parallel reads via the store's read lock), push results.
+        // ------------------------------------------------------------------
+        {
+            let mut worker_handles = Vec::new();
+            for _w in 0..num_query_workers {
+                let parse_rx = parse_rx.clone();
+                let result_tx = result_tx.clone();
+                let store = store.clone();
+                let h = std::thread::spawn(move || {
+                    loop {
+                        // Grab one item from the shared receiver, if any.
+                        let item = {
+                            let guard = parse_rx.lock().unwrap();
+                            guard.try_recv()
+                        };
+                        match item {
+                            Ok((_video_id, video)) => {
+                                let matches = store.query(&video);
+                                if result_tx.send((video, matches)).is_err() {
+                                    break; // writer gone
+                                }
+                            }
+                            Err(mpsc::TryRecvError::Empty) => std::thread::yield_now(),
+                            Err(mpsc::TryRecvError::Disconnected) => break,
+                        }
+                    }
+                });
+                worker_handles.push(h);
+            }
+            for h in worker_handles {
+                let _ = h.join();
+            }
+        }
+        drop(result_tx);
+
+        // ------------------------------------------------------------------
+        // Writer (main thread): the single serial committer.
+        // ------------------------------------------------------------------
+        let result_rx_guard = result_rx.lock().unwrap();
+        loop {
+            let (video, videomatches) = match result_rx_guard.recv() {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            log::warn!("Found {} matches for video {}.", videomatches.len(), video.id);
+            progressbar.inc();
+            let mut compare: Vec<duplo_rs::videocandidate::VideoCandidate> = Vec::new();
+            compare.push(video.clone());
+            for i in 0..videomatches.m.len() {
+                log::warn!("Match {} is similar to {}.", videomatches.m[i].id, video.id);
+                if let Some(index) = store.ids_lookup(&videomatches.m[i].id) {
+                    let (_, candidate) = store.return_candidate(index as u32);
+                    if !candidate.id.is_empty() {
+                        compare.push(candidate);
                     }
                 }
             }
+            store.add(&video.id, &video, video.runtime);
+            duplo_rs::files::present_video_matches(&dst, &compare);
         }
     }
     progressbar.finish();
-}
-
-fn parallel_processor(
-    a: mpsc::Sender<duplo_rs::videocandidate::VideoCandidate>,
-    filepath: &std::path::PathBuf,
-    video_id: u32,
-    num_videos: u32,
-    num_seconds_between_screenshots: u32,
-    id_in_files_to_process: u32,
-) {
-    let video = duplo_rs::files::process_video(filepath, video_id as usize, num_videos, num_seconds_between_screenshots, id_in_files_to_process);
-    // send value
-    a.send(video).unwrap();
-    return;
 }

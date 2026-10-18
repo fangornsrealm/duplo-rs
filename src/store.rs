@@ -102,7 +102,7 @@ impl Store {
             let coef = &hash.matrix.coefs[coefindex];
             for colorindex in 0..coef.c.len() {
                 let colorcoef = coef.c[colorindex];
-                if colorcoef.abs() < hash.thresholds.c[colorindex] {
+                if !crate::hash::coefficient_is_significant(colorcoef, hash.thresholds.c[colorindex]) {
                     continue;
                 }
                 let mut sign = 0;
@@ -205,7 +205,7 @@ impl Store {
             }
             for colorindex in 0..coef.c.len() {
                 let colorcoef = coef.c[colorindex];
-                if colorcoef.abs() < hash.thresholds.c[colorindex] {
+                if !crate::hash::coefficient_is_significant(colorcoef, hash.thresholds.c[colorindex]) {
                     // Coef is too small. Ignore.
 				    continue;
                 }

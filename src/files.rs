@@ -580,8 +580,7 @@ pub fn process_video(
 }
 
 pub fn find_similar_videos(
-    store: &mut crate::videostore::VideoStore,
-    client: &mut rusqlite::Connection,
+    store: &crate::videostore::VideoStore,
     id: &str,
     video: &crate::videocandidate::VideoCandidate,
 ) -> (
@@ -589,6 +588,6 @@ pub fn find_similar_videos(
     String,
     crate::videocandidate::VideoCandidate,
 ) {
-    let matches = store.query(client, video);
+    let matches = store.query(video);
     (matches, id.to_string(), video.clone())
 }

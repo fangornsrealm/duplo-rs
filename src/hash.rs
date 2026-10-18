@@ -158,6 +158,26 @@ pub fn coef_thresholds(coefs: &mut Vec<crate::haar::Coef>, k: i32) -> crate::haa
     thresholds
 }
 
+/// Decide whether a single wavelet coefficient is "significant" enough to be
+/// indexed and to contribute to a similarity score.
+///
+/// The threshold is the kth-largest magnitude for the channel; coefficients
+/// whose magnitude is at or below the threshold are considered noise and are
+/// ignored.
+///
+/// This is the single source of truth for the significance test, shared by the
+/// image store and the video store. It is deliberately `<=` (not `<`) so that a
+/// coefficient whose magnitude is *exactly* the threshold is excluded, and —
+/// critically — so that a **zero** coefficient is *never* treated as
+/// significant, even in the degenerate case where a channel's threshold is
+/// `0.0` (which happens for very flat frames where 40+ coefficients round to
+/// zero). With `<`, a zero coefficient would slip through (`0.0 < 0.0` is
+/// false), polluting the buckets with coefficients that carry no visual
+/// information and producing spurious similarity.
+pub fn coefficient_is_significant(coefficient: f64, threshold: f64) -> bool {
+    coefficient.abs() > threshold
+}
+
 fn clamp(val: i32) -> u8 {
     match val {
         ref v if *v < 0 => 0,

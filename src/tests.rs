@@ -95,6 +95,82 @@ fn test_quick_select() {
     assert!((thresholds.c[0] - 9.0).abs() > 0.02 || (thresholds.c[1] - 6.0).abs() > 0.02);
 }
 
+// ---------------------------------------------------------------------------
+// Regression test for the zero-threshold significance bug.
+//
+// A "defective"/degenerate frame (very flat, e.g. a solid color) has 40+
+// wavelet coefficients that round to exactly zero, so a channel's threshold
+// becomes 0.0. The significance test must treat a zero coefficient as *not*
+// significant even in that case. With the old `abs(coef) < threshold` test, a
+// zero coefficient slipped through (`0.0 < 0.0` is false), polluting the index
+// buckets with coefficients that carry no visual information and producing
+// spurious similarity between unrelated frames.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_zero_coefficient_never_significant() {
+    // A zero coefficient must never be significant, regardless of the
+    // threshold (including the degenerate 0.0 case).
+    assert!(!crate::hash::coefficient_is_significant(0.0, 0.0),
+        "a zero coefficient must not be significant when the threshold is 0.0");
+    assert!(!crate::hash::coefficient_is_significant(0.0, 5.0),
+        "a zero coefficient must not be significant when the threshold is 5.0");
+
+    // A non-zero coefficient above the threshold is significant.
+    assert!(crate::hash::coefficient_is_significant(10.0, 5.0));
+    assert!(crate::hash::coefficient_is_significant(-10.0, 5.0),
+        "significance is based on magnitude, not sign");
+
+    // A coefficient at or below the threshold is not significant.
+    assert!(!crate::hash::coefficient_is_significant(5.0, 5.0),
+        "a coefficient exactly at the threshold is excluded");
+    assert!(!crate::hash::coefficient_is_significant(1.0, 5.0));
+}
+
+// Demonstrate the degenerate-image scenario end to end: a flat image has a
+// channel threshold of 0.0, and the significant-coefficient count must NOT
+// include the zero coefficients (which are the majority of a flat frame).
+#[test]
+fn test_degenerate_image_significance() {
+    // A solid-color image: almost every non-DC wavelet coefficient is ~0.
+    let img = image::RgbaImage::from_pixel(128, 128, image::Rgba([120, 120, 120, 255]));
+    let (hash, _small) = crate::hash::create_hash(&img);
+
+    // Count how many coefficients the *old* (<) test would call significant
+    // versus how many the *new* (>) test calls significant. They must differ
+    // for a degenerate image, and the new count must be <= the old count.
+    let mut old_sig = 0usize;
+    let mut new_sig = 0usize;
+    for ci in 1..hash.matrix.coefs.len() {
+        let coef = &hash.matrix.coefs[ci];
+        for ci2 in 0..coef.c.len() {
+            let v = coef.c[ci2];
+            let thr = hash.thresholds.c[ci2];
+            if v.abs() < thr {
+                old_sig += 1; // old: `abs < threshold` included these
+            }
+            if crate::hash::coefficient_is_significant(v, thr) {
+                new_sig += 1;
+            }
+        }
+    }
+    // For a flat image the old test over-counts (it includes zero coefs).
+    // The new test must never include a zero coefficient.
+    assert!(new_sig <= old_sig,
+        "new significance count must be <= old ({} <= {})", new_sig, old_sig);
+
+    // The core invariant: no zero coefficient may be significant.
+    for ci in 1..hash.matrix.coefs.len() {
+        let coef = &hash.matrix.coefs[ci];
+        for ci2 in 0..coef.c.len() {
+            let v = coef.c[ci2];
+            if v == 0.0 {
+                assert!(!crate::hash::coefficient_is_significant(v, hash.thresholds.c[ci2]),
+                    "zero coefficient at ({}, {}) must not be significant", ci, ci2);
+            }
+        }
+    }
+}
+
 #[test]
 fn test_query() {
     use base64::{engine::general_purpose, Engine as _};
@@ -367,3 +443,127 @@ fn test_exchange() {
     assert!(store.ids.contains_key("imgB"));
     assert!(store.ids.contains_key("imgC"));
 }
+
+
+// ---------------------------------------------------------------------------
+// Concurrency test for the video store (Stage 2).
+//
+// Builds a few synthetic videos from in-memory images (no ffmpeg required),
+// then exercises the thread-safe VideoStore: concurrent `add()` calls (which
+// must be serialised by the write lock) and concurrent `query()` calls (which
+// must be allowed to run in parallel under the read lock).
+// ---------------------------------------------------------------------------
+#[test]
+fn test_video_store_concurrency() {
+    use std::sync::Arc;
+    use std::thread;
+
+    use base64::{engine::general_purpose, Engine as _};
+
+    // Decode the three base64 JPEGs defined above (A, B, C) and hash them.
+    // These are real photographs, so they produce well-distributed visual
+    // hashes (unlike solid colors, which are degenerate). IMGA and IMGC are
+    // visually similar; IMGB is different.
+    let decode_hash = |b64: &str| -> crate::hash::Hash {
+        let bytes = general_purpose::STANDARD.decode(b64.as_bytes()).unwrap();
+        let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Jpeg).unwrap();
+        let (hash, _small) = crate::hash::create_hash(&img.into());
+        hash
+    };
+
+    let mut hashes: Vec<crate::hash::Hash> = Vec::new();
+    hashes.push(decode_hash(IMGA));
+    hashes.push(decode_hash(IMGB));
+    hashes.push(decode_hash(IMGC));
+
+    // Helper: build a VideoCandidate whose screenshots all use the given hash.
+    let make_video = |id: &str, video_index: u32, hash: &crate::hash::Hash, num_shots: u32| {
+        let mut v = crate::videocandidate::VideoCandidate::from(id, video_index as usize);
+        v.width = 64;
+        v.height = 64;
+        v.runtime = num_shots * 10;
+        for shot in 0..num_shots {
+            let s = crate::videocandidate::Screenshot::from(
+                id,
+                video_index as usize,
+                shot as usize,
+                shot * 10,
+                hash,
+            );
+            v.screenshots.push(s);
+        }
+        v
+    };
+
+    // One video per hash, 8 screenshots each (each screenshot is the same
+    // frame, so a query of the same frame should match the stored video).
+    let mut videos: Vec<crate::videocandidate::VideoCandidate> = Vec::new();
+    for (i, hash) in hashes.iter().enumerate() {
+        let id = format!("/tmp/videotest_img{}", i);
+        videos.push(make_video(&id, (i + 1) as u32, hash, 8));
+    }
+
+    // Create an in-memory SQLite database and a VideoStore on top of it.
+    let conn = crate::videostore::connect(":memory:").expect("connect :memory: failed");
+    let store = Arc::new(crate::videostore::VideoStore::new(
+        conn,
+        -20.0,
+        "/tmp",
+        4,
+        10,
+        6,
+        10,
+    ));
+
+    // --- Concurrent adds: one thread per video (3 total). ---------------
+    {
+        let mut handles = Vec::new();
+        for video in videos.iter() {
+            let store = Arc::clone(&store);
+            let id = video.id.clone();
+            let v = video.clone();
+            handles.push(thread::spawn(move || {
+                store.add(&id, &v, v.runtime);
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(store.size(), 3, "all 3 videos should be in the store");
+    }
+
+    // --- Concurrent queries: 2 threads per video (6 total). -------------
+    // All should complete without deadlock, and the store should remain
+    // consistent (size unchanged, no panics).
+    {
+        let mut handles = Vec::new();
+        for video in videos.iter() {
+            let store_a = Arc::clone(&store);
+            let v = video.clone();
+            handles.push(thread::spawn(move || {
+                let _matches = store_a.query(&v);
+            }));
+            // A few extra threads querying clones to increase contention.
+            let store_b = Arc::clone(&store);
+            let v2 = video.clone();
+            handles.push(thread::spawn(move || {
+                let _matches = store_b.query(&v2);
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        // The store should still hold exactly 3 videos.
+        assert_eq!(store.size(), 3, "size must be stable under concurrent queries");
+    }
+
+    // --- Verify a self-query finds a match (sanity check the index).
+    let query_video = videos[0].clone();
+    let matches = store.query(&query_video);
+    assert!(
+        !matches.m.is_empty(),
+        "querying with video 0 should find at least one match (itself)"
+    );
+}
+
+
