@@ -217,7 +217,7 @@ pub fn present_pairs(
                 "Unable to create the duplicates directory in {}!",
                 destination_dir.display()
             );
-            std::process::exit(2);
+            return;
         }
     }
     let prefix = generate_random_string(5);
@@ -298,7 +298,7 @@ fn prepare_video_table(compare: &Vec<crate::videocandidate::VideoCandidate>) -> 
                     v, compare[i].id
                 );
             }
-            
+
             v = format!(
                 r##"{}<td><a href="{}">{}</a><p>Resolution: {}x{}</p><p>Duration: {}</p></td></tr>"##,
                 v,
@@ -335,7 +335,7 @@ pub fn present_video_matches(
                 "Unable to create the video matches directory in {}!",
                 destination_dir.display()
             );
-            std::process::exit(2);
+            return;
         }
     }
 
@@ -355,10 +355,14 @@ pub fn present_video_matches(
     let path = std::path::Path::new(&storefile);
     let display = path.display();
     // Open a file in write-only mode, returns `io::Result<File>`
-    let mut write_file = match std::fs::File::create(&path) {
-        Err(why) => panic!("couldn't create {}: {}", display, why),
-        Ok(write_file) => write_file,
+    let write_file = match std::fs::File::create(&path) {
+        Err(why) => {
+            log::error!("couldn't create {}: {}", display, why);
+            return;
+        }
+        Ok(f) => f,
     };
+    let mut write_file = write_file;
     let ret = write_file.write(&html.as_bytes());
     if ret.is_err() {
         log::error!("failed to write html data to file {}!", storefile.display())
@@ -418,131 +422,156 @@ pub fn string_to_float(mystring: &str) -> f32 {
     f
 }
 
-fn video_metadata(filepath: &str) -> VideoMetadata {
+/// Probe a video file for duration, resolution, and frame rate using ffmpeg's
+/// stderr output. Returns an error only if ffmpeg itself cannot be spawned
+/// (e.g. binary missing); a failed probe (corrupt file, etc.) yields
+/// `Default` metadata.
+fn video_metadata(filepath: &str) -> Result<VideoMetadata, Box<dyn std::error::Error>> {
     let mut meta = VideoMetadata {
         ..Default::default()
     };
     let ffmpeg_output = std::process::Command::new("ffmpeg")
         .args(["-i", filepath])
         .output()
-        .expect("failed to execute process");
-    match String::from_utf8(ffmpeg_output.stderr) {
-        Ok(message) => {
-            if let Ok(re_duration) = Regex::new(
-                r"(?i)\s*Duration:\s+(?P<hours>\d+):(?P<minutes>\d+):(?P<seconds>\d+).\d+\s*,",
-            ) {
-                if re_duration.is_match(&message) {
-                    let caps = re_duration.captures(&message).unwrap();
-                    let hours = string_to_uint(&caps["hours"]);
-                    let minutes = string_to_uint(&caps["minutes"]);
-                    let seconds = string_to_uint(&caps["seconds"]);
-                    meta.duration = hours * 3600 + minutes * 60 + seconds;
-                }
-            }
-            if let Ok(re_video) =
-                Regex::new(r"(?i), (?P<width>\d+)x(?P<height>\d+).*, (?P<fps>\d+) fps") {
-                if re_video.is_match(&message) {
-                    let caps = re_video.captures(&message).unwrap();
-                    meta.width = string_to_uint(&caps["width"]);
-                    meta.height = string_to_uint(&caps["height"]);
-                    meta.framerate = string_to_float(&caps["fps"]);
-                }
-            }
+        .map_err(|e| format!("failed to execute ffmpeg (is it installed?): {}", e))?;
+    let stderr = String::from_utf8_lossy(&ffmpeg_output.stderr).to_string();
+    if let Ok(re_duration) =
+        Regex::new(r"(?i)\s*Duration:\s+(?P<hours>\d+):(?P<minutes>\d+):(?P<seconds>\d+).\d+\s*,")
+    {
+        if let Some(caps) = re_duration.captures(&stderr) {
+            let hours = string_to_uint(&caps["hours"]);
+            let minutes = string_to_uint(&caps["minutes"]);
+            let seconds = string_to_uint(&caps["seconds"]);
+            meta.duration = hours * 3600 + minutes * 60 + seconds;
         }
-        Err(error) => log::error!("Error: {}", error),
     }
-
-    meta
+    if let Ok(re_video) = Regex::new(r"(?i), (?P<width>\d+)x(?P<height>\d+).*, (?P<fps>\d+) fps") {
+        if let Some(caps) = re_video.captures(&stderr) {
+            meta.width = string_to_uint(&caps["width"]);
+            meta.height = string_to_uint(&caps["height"]);
+            meta.framerate = string_to_float(&caps["fps"]);
+        }
+    }
+    Ok(meta)
 }
 
+/// Extract one screenshot every `num_seconds_between_screenshots` seconds from
+/// a video file, using a **single** ffmpeg decode pass (instead of spawning a
+/// separate `ffmpeg -ss` process per frame). Screenshots are written to a
+/// temporary directory, decoded + hashed, and then cleaned up.
+///
+/// The `scale=128:-2` filter down-scales inside ffmpeg so we never pay the
+/// cost of JPEG-decoding a full-resolution frame in Rust.
 fn create_screenshots(
     filepath: &str,
     video_id: u32,
     num_videos: u32,
     num_seconds_between_screenshots: u32,
     id_in_files_to_process: u32,
-) -> Result<(Vec<crate::videocandidate::Screenshot>, VideoMetadata), image::ImageError> {
+) -> Result<(Vec<crate::videocandidate::Screenshot>, VideoMetadata), Box<dyn std::error::Error>> {
+    let meta = video_metadata(filepath)?;
+
+    // Use a unique temp dir so parallel workers don't clobber each other.
+    let tmp_dir =
+        std::env::temp_dir().join(format!("duplo_vid_{}_{}", video_id, id_in_files_to_process));
+    std::fs::create_dir_all(&tmp_dir)
+        .map_err(|e| format!("failed to create temp dir {}: {}", tmp_dir.display(), e))?;
+
+    // Single-pass ffmpeg: sequential decode, sample 1 frame per N seconds,
+    // downscale to 128 px wide (height auto, divisible by 2).
+    let vf = format!("fps=1/{},scale=128:-2", num_seconds_between_screenshots);
+    let output_pattern = format!(
+        "{}/shot_%05d.jpeg",
+        tmp_dir.to_str().ok_or("invalid temp dir path")?
+    );
+
+    let ffmpeg_output = std::process::Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-i",
+            filepath,
+            "-vf",
+            &vf,
+            "-q:v",
+            "2",
+            &output_pattern,
+        ])
+        .output()
+        .map_err(|e| {
+            std::fs::remove_dir_all(&tmp_dir).ok();
+            format!("failed to execute ffmpeg: {}", e)
+        })?;
+
+    if !ffmpeg_output.status.success() {
+        let stderr = String::from_utf8_lossy(&ffmpeg_output.stderr);
+        log::error!(
+            "ffmpeg failed for video {} of {} ({}): {}",
+            id_in_files_to_process,
+            num_videos,
+            filepath,
+            stderr.trim()
+        );
+        std::fs::remove_dir_all(&tmp_dir).ok();
+        return Ok((Vec::new(), meta));
+    }
+
+    log::warn!(
+        "Created screenshots for video {} of {} ({})",
+        id_in_files_to_process,
+        num_videos,
+        filepath
+    );
+
+    // Read the produced JPEGs in filename order (zero-padded by ffmpeg).
+    let mut frames: Vec<std::path::PathBuf> = std::fs::read_dir(&tmp_dir)
+        .map_err(|e| {
+            std::fs::remove_dir_all(&tmp_dir).ok();
+            format!("failed to read temp dir {}: {}", tmp_dir.display(), e)
+        })?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|p| p.extension().map_or(false, |ext| ext == "jpeg"))
+        .collect();
+    frames.sort();
+
     let mut v = Vec::new();
-
-    let meta = video_metadata(filepath);
     let mut screenshot_id: usize = 1;
-    let mut timecode = num_seconds_between_screenshots;
-    let outputpattern = format!("{}_%03d.jpeg", filepath);
-    let output = format!("{}_001.jpeg", filepath);
-    let outputpath = std::path::Path::new(&output);
-    while timecode < meta.duration {
-        let time = timecode_to_ffmpeg_time(timecode);
-        if outputpath.is_file() {
-            let ret = std::fs::remove_file(&output);
-            if ret.is_err() {
-                log::error!("could not delete file {}", output);
+    for frame_path in &frames {
+        let timecode = (screenshot_id as u32) * num_seconds_between_screenshots;
+        let reader = image::ImageReader::open(frame_path);
+        match reader {
+            Ok(r) => match r.decode() {
+                Ok(img) => {
+                    let rgba: image::RgbaImage = img.into();
+                    let (hash, _smallimg) = crate::hash::create_hash(&rgba);
+                    let ss = crate::videocandidate::Screenshot::from(
+                        filepath,
+                        video_id as usize,
+                        screenshot_id,
+                        timecode,
+                        &hash,
+                    );
+                    v.push(ss);
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Failed to decode screenshot {}: {}",
+                        frame_path.display(),
+                        e
+                    );
+                }
+            },
+            Err(e) => {
+                log::warn!("Failed to open screenshot {}: {}", frame_path.display(), e);
             }
         }
-
-        let ffmpeg_output = std::process::Command::new("ffmpeg")
-            .args([
-                "-ss",
-                &time,
-                "-i",
-                filepath,
-                "-frames:v",
-                "1",
-                "-q:v",
-                "2",
-                &outputpattern,
-            ])
-            .output()
-            .expect("failed to execute process");
-        match String::from_utf8(ffmpeg_output.stderr) {
-            Ok(_message) => log::warn!(
-                "Processing video {} of {} path {} timecode {}",
-                id_in_files_to_process,
-                num_videos,
-                filepath,
-                time
-            ),
-            Err(error) => log::error!("Error: {}", error),
-        }
-        if !outputpath.is_file() {
-            log::error!("Failed to create screenshot: {}", format!("ffmpeg -ss {} -i {} -frames:v 1 -q:v 2 ", time, filepath));
-            log::error!("File {} seems to be defective from position {}%", filepath, (timecode / meta.duration) * 100);
-            break;
-        }
-        let res = image::ImageReader::open(outputpath);
-        if res.is_ok() {
-            let dynimg = res.unwrap().decode();
-            if dynimg.is_err() {
-                return Ok((v, meta));
-            }
-            let img = dynimg.unwrap();
-            let (hash, _smallimg) = crate::hash::create_hash(&img.into());
-            let ss = crate::videocandidate::Screenshot::from(
-                filepath,
-                video_id as usize,
-                screenshot_id,
-                timecode,
-                &hash,
-            );
-            v.push(ss);
-        }
-        timecode += num_seconds_between_screenshots;
         screenshot_id += 1;
     }
-    if outputpath.is_file() {
-        let ret = std::fs::remove_file(&output);
-        if ret.is_err() {
-            log::error!("could not delete file {}", output);
-        }
-    }
+
+    // Clean up the temp directory regardless of success/failure.
+    std::fs::remove_dir_all(&tmp_dir).ok();
 
     Ok((v, meta))
-}
-
-fn timecode_to_ffmpeg_time(timecode: u32) -> String {
-    let hours = timecode / 3600;
-    let minutes = (timecode - hours * 3600) / 60;
-    let seconds = timecode - hours * 3600 - minutes * 60;
-    format!("{:02}:{:02}:{:02}.000", hours, minutes, seconds)
 }
 
 /// reads a video file, creating screenshots every 10 seconds,
@@ -559,7 +588,13 @@ pub fn process_video(
     let id = osstring_to_string(path.as_os_str());
     let mut video = crate::videocandidate::VideoCandidate::from(&id, video_id);
 
-    match create_screenshots(&id, video.index, num_videos, num_seconds_between_screenshots, id_in_files_to_process) {
+    match create_screenshots(
+        &id,
+        video.index,
+        num_videos,
+        num_seconds_between_screenshots,
+        id_in_files_to_process,
+    ) {
         Ok((v, meta)) => {
             video.width = meta.width;
             video.height = meta.height;
@@ -574,7 +609,11 @@ pub fn process_video(
                 video.runtime = screentime + 5;
             }
         }
-        Err(error) => log::error!("Failed to create screenshots for {}: {}", path.display(), error),
+        Err(error) => log::error!(
+            "Failed to create screenshots for {}: {}",
+            path.display(),
+            error
+        ),
     }
     video
 }

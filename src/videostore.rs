@@ -451,10 +451,10 @@ impl VideoStoreInner {
                             return v;
                         }
                     }
-                    let sensitivity_u32 = v.sensitivity as u32;
+                    let sensitivity_i64 = v.sensitivity as i64;
                     match connection.execute(
                         "INSERT INTO videostore_parameters (config_id, sensitivity, start_directory, num_threads, num_seconds_between_screenshots, min_similar_screenshots_in_sequence, max_candidates_in_cache) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                        params![&1, &sensitivity_u32, &v.start_directory, &v.num_threads, &v.num_seconds_between_screenshots, &v.min_similar_screenshots_in_sequence, &v.candidate_cache.max_candidates],
+                        params![&1, &sensitivity_i64, &v.start_directory, &v.num_threads, &v.num_seconds_between_screenshots, &v.min_similar_screenshots_in_sequence, &v.candidate_cache.max_candidates],
                     ) {
                         Ok(retval) => log::warn!("Inserted {} data into parameter.", retval),
                         Err(error) => {
@@ -654,7 +654,10 @@ impl VideoStoreInner {
             }
             for colorindex in 0..coef.c.len() {
                 let colorcoef = coef.c[colorindex];
-                if !crate::hash::coefficient_is_significant(colorcoef, hash.thresholds.c[colorindex]) {
+                if !crate::hash::coefficient_is_significant(
+                    colorcoef,
+                    hash.thresholds.c[colorindex],
+                ) {
                     continue;
                 }
                 let sign = if colorcoef < 0.0 { 1u32 } else { 0u32 };
@@ -875,7 +878,10 @@ impl VideoStoreInner {
                 let coef = &hash.matrix.coefs[coefindex];
                 for colorindex in 0..coef.c.len() {
                     let colorcoef = coef.c[colorindex];
-                    if !crate::hash::coefficient_is_significant(colorcoef, hash.thresholds.c[colorindex]) {
+                    if !crate::hash::coefficient_is_significant(
+                        colorcoef,
+                        hash.thresholds.c[colorindex],
+                    ) {
                         continue;
                     }
                     let mut sign = 0;
@@ -1033,16 +1039,13 @@ impl VideoStoreInner {
         _client: &mut rusqlite::Connection,
         hash: &crate::hash::Hash,
         _video_ids: &std::collections::BTreeMap<u32, usize>,
-        screenshot_index_global: usize,
-        _screenshots: &Vec<crate::videostore::ScreenMeta>,
+        scores: &mut Vec<f64>,
+        touched: &mut Vec<usize>,
     ) -> crate::videomatches::VideoMatches {
         let mut ms = crate::videomatches::VideoMatches::new();
         if self.index.num_screenshots == 0 {
             return ms;
         }
-        // prepare the scoring vector where we can rate any existing screenshot
-        let mut scores: Vec<f64> = Vec::new();
-        scores.resize(screenshot_index_global, f64::NAN);
 
         // Examine hash buckets.
         for coefindex in 0..hash.matrix.coefs.len() {
@@ -1062,7 +1065,10 @@ impl VideoStoreInner {
             }
             for colorindex in 0..coef.c.len() {
                 let colorcoef = coef.c[colorindex];
-                if !crate::hash::coefficient_is_significant(colorcoef, hash.thresholds.c[colorindex]) {
+                if !crate::hash::coefficient_is_significant(
+                    colorcoef,
+                    hash.thresholds.c[colorindex],
+                ) {
                     // Coef is too small. Ignore.
                     continue;
                 }
@@ -1084,17 +1090,17 @@ impl VideoStoreInner {
                             score += WEIGHTS[colorid][0];
                         }
                         scores[g as usize] = score;
+                        touched.push(g as usize);
                     }
                     scores[g as usize] -= WEIGHTSUMS[bin as usize];
                 }
             }
         }
-        // Create matches from the scored global screenshot indices.
-        for (g, score) in scores.iter().enumerate() {
-            if score.is_nan() {
-                continue;
-            }
-            if *score > self.sensitivity {
+        // Create matches from only the touched (scored) indices — avoids a
+        // full-corpus scan on every query position.
+        for &g in touched.iter() {
+            let score = scores[g];
+            if score > self.sensitivity {
                 continue;
             }
             let shot = &self.index.screenshots[g];
@@ -1102,7 +1108,7 @@ impl VideoStoreInner {
             m.video_id = shot.video_id;
             m.screenshot_id = shot.screenshot_id;
             m.timecode = shot.timecode;
-            m.score = *score;
+            m.score = score;
             m.ratio_diff = shot.ratio.log(10.0).abs() - hash.ratio.log(10.0);
             m.dhash_distance = crate::hamming::hamming_distance(shot.dhash0, hash.dhash[0])
                 + crate::hamming::hamming_distance(shot.dhash1, hash.dhash[1]);
@@ -1115,8 +1121,11 @@ impl VideoStoreInner {
                 ms.m.push(m);
             }
         }
-        // sort the vector so the first match is the one with the lowest value --> the best match
-        // The number of matches should be small, so the bubble sort is about the fastest algorithm.
+        // Reset touched scores to NaN so the next call starts clean.
+        for &g in touched.iter() {
+            scores[g] = f64::NAN;
+        }
+        touched.clear();
         ms.sort();
         ms
     }
@@ -1141,7 +1150,8 @@ impl VideoStoreInner {
             m.screenshot_id = screenshot_id;
             m.timecode = screenshot_id * time_between_screenshots;
             m.score = -60.0
-                - 100.0 * (num_matches as f64 * time_between_screenshots as f64) / matched.runtime as f64
+                - 100.0 * (num_matches as f64 * time_between_screenshots as f64)
+                    / matched.runtime as f64
                 + ((new_video.width - matched.width) * (new_video.width - matched.width)) as f64;
         }
         m
@@ -1164,9 +1174,14 @@ impl VideoStoreInner {
         if self.num_candidates == 0 {
             return ms;
         }
-        let mut sequences: std::collections::BTreeMap<u32, Vec<u32>> = std::collections::BTreeMap::new();
+        let mut sequences: std::collections::BTreeMap<u32, Vec<u32>> =
+            std::collections::BTreeMap::new();
         let mut active_sequence_counter = std::collections::BTreeMap::new();
         let screenshot_index_global = self.index.num_screenshots;
+        // Hoist the scoring scratch vector: allocate once per query, reset only
+        // touched indices between positions (avoids O(corpus) alloc+fill per call).
+        let mut scores: Vec<f64> = vec![f64::NAN; screenshot_index_global as usize];
+        let mut touched: Vec<usize> = Vec::new();
 
         // search for each screenshot of the current video in the store
         let report_interval = (5 * 60 / self.num_seconds_between_screenshots) as usize;
@@ -1176,8 +1191,8 @@ impl VideoStoreInner {
                 client,
                 hash,
                 &self.index.video_ids,
-                screenshot_index_global as usize,
-                &self.index.screenshots,
+                &mut scores,
+                &mut touched,
             );
             let mut previous_videos = std::collections::BTreeSet::new();
             for (key, _) in sequences.iter() {
@@ -1198,9 +1213,13 @@ impl VideoStoreInner {
             // near-identical frames), which is why we prefer the contiguous one.
             //
             // Collect, per video, the candidate screenshot_ids sorted best-first.
-            let mut by_video: std::collections::BTreeMap<u32, Vec<u32>> = std::collections::BTreeMap::new();
+            let mut by_video: std::collections::BTreeMap<u32, Vec<u32>> =
+                std::collections::BTreeMap::new();
             for i in 0..matches.len() {
-                by_video.entry(matches.m[i].video_id).or_default().push(matches.m[i].screenshot_id);
+                by_video
+                    .entry(matches.m[i].video_id)
+                    .or_default()
+                    .push(matches.m[i].screenshot_id);
             }
             for (video_id, shot_ids) in by_video {
                 new_videos.insert(video_id);
@@ -1277,9 +1296,9 @@ impl VideoStoreInner {
                     m.video_id = video_id;
                     m.screenshot_id = 0;
                     m.timecode = 0;
-                    m.score = -60.0
-                        - 100.0 * (v.len() as f64 * 10.0) / matchedvideo.runtime as f64
-                        + ((video.width - matchedvideo.width) * (video.width - matchedvideo.width)) as f64;
+                    m.score = -60.0 - 100.0 * (v.len() as f64 * 10.0) / matchedvideo.runtime as f64
+                        + ((video.width - matchedvideo.width) * (video.width - matchedvideo.width))
+                            as f64;
                 }
                 if m.id.len() != 0 {
                     ms.m.push(m);
@@ -1575,12 +1594,7 @@ impl VideoStore {
     }
 
     /// Add a video to the store. Takes a write lock, so only one at a time.
-    pub fn add(
-        &self,
-        id: &str,
-        video: &crate::videocandidate::VideoCandidate,
-        runtime: u32,
-    ) {
+    pub fn add(&self, id: &str, video: &crate::videocandidate::VideoCandidate, runtime: u32) {
         let mut inner = self.inner.write().unwrap();
         let mut conn_guard = self.conn.lock().unwrap();
         inner.add(&mut *conn_guard, id, video, runtime)
@@ -1619,10 +1633,7 @@ impl VideoStore {
     }
 
     /// Fetch a full candidate (all screenshots + hashes) for presentation.
-    pub fn return_candidate(
-        &self,
-        video_id: u32,
-    ) -> (u32, crate::videocandidate::VideoCandidate) {
+    pub fn return_candidate(&self, video_id: u32) -> (u32, crate::videocandidate::VideoCandidate) {
         let inner = self.inner.read().unwrap();
         let mut conn_guard = self.conn.lock().unwrap();
         inner.return_candidate(&mut *conn_guard, video_id)
@@ -1652,9 +1663,17 @@ impl VideoStore {
 
     /// Test/debug helper: report how many screenshots are in the in-memory
     /// index and the total number of bucket entries.
-    pub fn debug_index_stats(&self) -> (u32 /*num_screenshots*/, usize /*total_bucket_entries*/) {
+    pub fn debug_index_stats(
+        &self,
+    ) -> (
+        u32,   /*num_screenshots*/
+        usize, /*total_bucket_entries*/
+    ) {
         let inner = self.inner.read().unwrap();
-        (inner.index.num_screenshots, inner.index.buckets.iter().map(|b| b.len()).sum())
+        (
+            inner.index.num_screenshots,
+            inner.index.buckets.iter().map(|b| b.len()).sum(),
+        )
     }
 
     /// Test/debug helper: how many screenshots are filed under a given location.

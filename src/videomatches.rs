@@ -151,17 +151,11 @@ impl VideoMatches {
     }
 
     pub fn sort(&mut self) {
-        // we use Bubble sort until someone wants to spend the time
-        if self.m.len() == 0 {
-            return;
-        }
-        for i in 0..self.m.len() - 1 {
-            for j in i + 1..self.len() {
-                if self.less(j, i) {
-                    self.swap(j, i);
-                }
-            }
-        }
+        self.m.sort_by(|a, b| {
+            a.score
+                .partial_cmp(&b.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
 
     pub fn encode(&self, to: &mut Vec<u8>) {
