@@ -9,6 +9,26 @@ benchmark before investing.
 Impact legend: **[H]**igh · **[M]**edium · **[L]**ow. Effort: **S** ≤ ~1 hr,
 **M** a few hrs, **L** days.
 
+## Status
+
+| § | Item | Status | Commit |
+|---|------|--------|--------|
+| §3 | `hamming_distance` → `count_ones()` | ✅ Done | `60cab95` |
+| §4 | `coef_threshold` → `select_nth_unstable` | ✅ Done | `60cab95` |
+| §5 | Negative sensitivity → `i64` persistence | ✅ Done | `60cab95` |
+| §2 | One-pass ffmpeg + `scale=128:-2` + temp dir + `Result` | ✅ Done | `e21fe3c` |
+| §6 | Hoist `scores` scratch vector + touched-index reset | ✅ Done | `e21fe3c` |
+| §10 | `VideoMatches::sort` → `sort_by` | ✅ Done | `e21fe3c` |
+| §13 | Remove `process::exit(2)` / `panic!` in presentation | ✅ Done | `e21fe3c` |
+| §14 | Video test suite (7 new tests) + 3 bug fixes | ✅ Done | `bd70469` |
+| §1 | Compact per-screenshot storage (~200× BLOB reduction) | ⏳ Next | — |
+| §12 | Remove vestigial state (`candidate_cache`, `num_indices`, …) | ⏳ | — |
+| §7 | Cache significant-location list per hash | ⏳ (likely) | — |
+| §8 | `delete` incremental instead of full rebuild | ⏳ | — |
+| §11 | Marshalling endianness | ⏳ | — |
+| §15 | Observability: metrics, `--explain` mode | ⏳ | — |
+| §16 | Purpose-built mmap index / two-pass / LMDB / content-hash / tokio | ⏳ | — |
+
 ---
 
 ## 0. Read this first
@@ -388,3 +408,8 @@ are safe to act on. §7 and §2's "5–20×" figure are estimates — benchmark 
 before/after on a representative video before committing to the larger rewrite.
 §5 is a genuine correctness bug (negative sensitivity persisted as 0) and the
 cheap fix is high value.
+
+*Additional bugs found by §14 tests (fixed in `bd70469`):*
+- `delete()` read `video_id` from column 1 of a 1-column SELECT (off-by-one)
+- `exchange()` SQL was missing `SET` keyword: `UPDATE … filename = ?1 WHERE …`
+- `delete()` never decremented `num_candidates`, so `size()` returned a stale value
