@@ -122,3 +122,9 @@ A screenshot every five minutes would be much faster and use 30x less resources,
 - Identify copyright violations
 - Save disk space by detecting and removing duplicate images or videos
 - Search for images or videos by similarity
+
+## Optimizations
+
+The performance of video comparison is not good. And requires way too much resources.
+
+As we don't have the time to test and optimize this by hand we asked an LLM (Quen3.8 27B) to take a look.
