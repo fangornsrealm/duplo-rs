@@ -604,8 +604,8 @@ pub fn process_video(
                 video.screenshots.push(ss);
             }
             // correct the runtime if the last screenshots could not be read ( possibly defective video )
-            let screentime = video.screenshots.len() as u32 * 10;
-            if video.runtime - screentime > 10 {
+            let screentime = video.screenshots.len() as u32 * num_seconds_between_screenshots;
+            if video.runtime.saturating_sub(screentime) > 10 {
                 video.runtime = screentime + 5;
             }
         }

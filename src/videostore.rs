@@ -954,7 +954,7 @@ impl VideoStoreInner {
             Ok(mut statement) => match statement.query(params![id]) {
                 Ok(mut rows) => {
                     while let Ok(Some(row)) = rows.next() {
-                        let s_opt = row.get(1);
+                        let s_opt = row.get(0);
                         if s_opt.is_ok() {
                             let video_id = s_opt.unwrap();
                             self.video_ids.remove(&video_id);
@@ -984,6 +984,7 @@ impl VideoStoreInner {
             return;
         }
         self.ids.remove(id);
+        self.num_candidates -= 1;
 
         // Remove from all index lists.
         let ret = connection.execute(
@@ -1022,7 +1023,7 @@ impl VideoStoreInner {
 
         // Update the candidate.
         let ret = connection.execute(
-            "UPDATE videostore_candidates filename = ?1 WHERE filename = ?2",
+            "UPDATE videostore_candidates SET filename = ?1 WHERE filename = ?2",
             params![&newid, &oldid],
         );
         if ret.is_err() {
@@ -1221,6 +1222,7 @@ impl VideoStoreInner {
                     .or_default()
                     .push(matches.m[i].screenshot_id);
             }
+
             for (video_id, shot_ids) in by_video {
                 new_videos.insert(video_id);
                 if !active_sequence_counter.contains_key(&video_id) {

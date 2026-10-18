@@ -137,8 +137,8 @@ pub fn coef_threshold(coefs: &Vec<crate::haar::Coef>, k: i32, n: usize) -> f64 {
     }
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     if v.len() <= k as usize {
-        // Fewer than k+1 values: the minimum is the best (and only) candidate.
-        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        // Not enough values to find the kth-largest: return the minimum.
+        // (v is already sorted ascending from the sort above.)
         return v[0];
     } else {
         // kth-largest == (len-k)th smallest, i.e. index (len-k-1).
