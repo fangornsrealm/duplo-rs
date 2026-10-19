@@ -22,11 +22,11 @@ Impact legend: **[H]**igh · **[M]**edium · **[L]**ow. Effort: **S** ≤ ~1 hr,
 | §13 | Remove `process::exit(2)` / `panic!` in presentation | ✅ Done | `e21fe3c` |
 | §14 | Video test suite (7 new tests) + 3 bug fixes | ✅ Done | `bd70469` |
 | §1 | Compact per-screenshot storage (~200× BLOB reduction) + migration | ✅ Done | `0a4f0ef` |
-| §12 | Remove vestigial state (`candidate_cache`, `num_images`) | ✅ Done | pending |
-| §7 | Cache significant-location list per hash (memoized in `search_matches`) | ✅ Done | pending |
-| §8 | `delete` incremental via `InMemoryIndex::remove_video` (no full rebuild) | ✅ Done | pending |
+| §12 | Remove vestigial state (`candidate_cache`, `num_images`) | ✅ Done | `207fe6a` |
+| §7 | Cache significant-location list per hash (memoized in `search_matches`) | ✅ Done | `207fe6a` |
+| §8 | `delete` incremental via `InMemoryIndex::remove_video` (no full rebuild) | ✅ Done | `207fe6a` |
 | §11 | Marshalling endianness | ⏳ Deferred (format change; local files, same-arch — see note) | — |
-| §15 | Observability: `explain_screenshot()` + `print_metrics()` | ✅ Done | pending |
+| §15 | Observability: `explain_screenshot()` + `print_metrics()` | ✅ Done | `207fe6a` |
 | §16 | Purpose-built mmap index / two-pass / LMDB / content-hash / tokio | ⏳ | — |
 
 ---
