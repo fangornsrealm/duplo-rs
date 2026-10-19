@@ -15,94 +15,7 @@ pub static TOPCOEFS: i32 = 40;
 static WEIGHTSUMS: [f64; 6] = [58.58 as f64, 2.45, 1.9, 1.19, 0.93, 0.71];
 pub static CTRL_C_PRESSED: bool = false;
 
-#[derive(Clone, Debug, PartialEq, PartialOrd)]
-pub struct CandidateCache {
-    pub map: std::collections::BTreeMap<u32, crate::videocandidate::VideoCandidate>,
-    pub fifo: std::collections::LinkedList<u32>,
-    pub max_candidates: usize,
-}
-
-impl Default for CandidateCache {
-    fn default() -> CandidateCache {
-        CandidateCache {
-            map: std::collections::BTreeMap::new(),
-            fifo: std::collections::LinkedList::new(),
-            max_candidates: 0,
-        }
-    }
-}
-
-impl CandidateCache {
-    pub fn new(max_candidates: usize) -> Self {
-        let mut v = CandidateCache {
-            ..Default::default()
-        };
-        v.max_candidates = max_candidates;
-        v
-    }
-
-    pub fn contains(&self, video_id: u32) -> bool {
-        if self.map.contains_key(&video_id) {
-            return true;
-        }
-        false
-    }
-
-    pub fn add(&mut self, video: crate::videocandidate::VideoCandidate) {
-        if self.max_candidates == 0 {
-            return;
-        }
-        if self.fifo.len() == self.max_candidates {
-            // drop the oldest entry
-            let drop_id = self.fifo.pop_front();
-            if drop_id.is_some() {
-                self.map.remove(&drop_id.unwrap());
-            }
-        }
-        self.fifo.push_back(video.index);
-        self.map.insert(video.index, video);
-    }
-
-    // encode the data structure to binary stream
-    pub fn encode(&self, to: &mut Vec<u8>) {
-        crate::marshal::store_usize(self.map.len(), to);
-        for id in self.fifo.iter() {
-            self.map[id].encode(to);
-        }
-        crate::marshal::store_usize(self.fifo.len(), to);
-        for id in self.fifo.iter() {
-            crate::marshal::store_u32(*id, to);
-        }
-        crate::marshal::store_usize(self.max_candidates, to);
-    }
-
-    // decode data structure from binary stream
-    pub fn decode(&mut self, from: &mut std::io::Cursor<Vec<u8>>) {
-        if let Some(maplen) = crate::marshal::restore_usize(from) {
-            for _ in 0..maplen {
-                let mut candidate = crate::videocandidate::VideoCandidate::new();
-                candidate.decode(from);
-                self.map.insert(candidate.index, candidate);
-            }
-        } else {
-            return;
-        }
-        if let Some(fifolen) = crate::marshal::restore_usize(from) {
-            for _ in 0..fifolen {
-                if let Some(r) = crate::marshal::restore_u32(from) {
-                    self.fifo.push_back(r);
-                }
-            }
-        } else {
-            return;
-        }
-        if let Some(r) = crate::marshal::restore_usize(from) {
-            self.max_candidates = r;
-        } else {
-            return;
-        }
-    }
-}
+// (CandidateCache removed in §12: the in-memory index replaced the LRU.)
 
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub struct ScreenshotIndex {
@@ -233,9 +146,7 @@ impl Sequence {
 /// num_seconds_between screenshots   default 10. Increase for quicker scanning and less resources.
 /// min_similar_screenshots_in_sequence  number of similar screenshots in a row that have to match to count as similar video. Default: 6 or 1 minute
 ///
-/// candidate_cache   hold N last used video data in RAM so we don't have to hit the database all the time.
-///                   blocks N * <data_size> for the runtime of the program! Where <data_size> is 100 MB or more, depending on the runtime of the video.
-///                   This will easlity eat 10 GB or your RAM for 50 < N < 150.
+/// max_candidates_in_cache  (legacy config; the LRU was removed — the in-memory index serves this role now)
 ///
 /// Per-screenshot metadata that the hot scoring path needs. This is the
 /// "small" part of a stored screenshot: enough to compute dhash_distance,
@@ -324,10 +235,72 @@ pub struct InMemoryIndex {
     pub num_screenshots: u32,
 }
 
+impl InMemoryIndex {
+    /// Remove a single video (and all its screenshots) from the in-memory index.
+    ///
+    /// Complexity: O(total_bucket_entries + num_screenshots) — much cheaper than
+    /// the full `bulk_load_index` re-stream from SQLite (§8).
+    ///
+    /// After this call, all global screenshot indices in `buckets` and
+    /// `screenshots` are compacted (no gaps), and `video_ids` / `metas` /
+    /// `candidate_by_pos` are renumbered so that dense positions remain contiguous.
+    pub fn remove_video(&mut self, candidate_id: u32) {
+        let video_pos = match self.video_ids.get(&candidate_id) {
+            Some(&pos) => pos,
+            None => return,
+        };
+
+        // Step 1: find which global screenshot indices belong to this video.
+        let removed: Vec<u32> = self
+            .screenshots
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.video_id == candidate_id)
+            .map(|(i, _)| i as u32)
+            .collect();
+
+        // Step 2: remove those entries from every bucket.
+        if !removed.is_empty() {
+            let removed_set: std::collections::BTreeSet<u32> = removed.iter().copied().collect();
+            for bucket in self.buckets.iter_mut() {
+                bucket.retain(|&g| !removed_set.contains(&g));
+            }
+            // Step 3: renumber surviving bucket entries.
+            // For a survivor at old position `p`, its new position is
+            // `p - count(removed indices <= p)`.
+            let removed_sorted: Vec<u32> = removed; // already sorted (BTreeSet iter)
+            for bucket in self.buckets.iter_mut() {
+                for g in bucket.iter_mut() {
+                    let offset = removed_sorted.partition_point(|&r| r <= *g);
+                    *g -= offset as u32;
+                }
+            }
+            // Step 4: compact the screenshots array.
+            self.screenshots.retain(|s| s.video_id != candidate_id);
+        }
+
+        // Step 5: remove the video from the per-video arrays and renumber.
+        self.metas.remove(video_pos);
+        self.candidate_by_pos.remove(video_pos);
+        self.video_ids.remove(&candidate_id);
+        for (k, pos) in self
+            .video_ids
+            .iter()
+            .map(|(k, &v)| (*k, v))
+            .collect::<Vec<_>>()
+        {
+            if pos > video_pos {
+                self.video_ids.insert(k, pos - 1);
+            }
+        }
+
+        self.num_screenshots = self.screenshots.len() as u32;
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub struct VideoStoreInner {
     pub num_candidates: u32,
-    pub num_images: u32,
 
     pub ids: std::collections::BTreeMap<String, usize>,
     pub video_ids: std::collections::BTreeMap<u32, usize>,
@@ -341,7 +314,7 @@ pub struct VideoStoreInner {
     pub modified: bool,
     pub num_seconds_between_screenshots: u32,
     pub min_similar_screenshots_in_sequence: u32,
-    pub candidate_cache: CandidateCache,
+    pub max_candidates_in_cache: usize,
     /// In-memory mirror of `videostore_indices` + per-screenshot metadata.
     /// Populated once at load time and appended to incrementally in `add()`.
     /// This is the hot path: `search_matches` reads from here, not SQLite.
@@ -351,12 +324,9 @@ pub struct VideoStoreInner {
 impl Default for VideoStoreInner {
     fn default() -> VideoStoreInner {
         VideoStoreInner {
-            //candidates: Vec::new(),
             num_candidates: 0,
-            num_images: 0,
             ids: std::collections::BTreeMap::new(),
             video_ids: std::collections::BTreeMap::new(),
-            //indices: Vec::new(),
             num_indices: std::collections::BTreeMap::new(),
             num_index_values: 0,
             start_directory: ".".to_string(),
@@ -365,7 +335,7 @@ impl Default for VideoStoreInner {
             modified: false,
             num_seconds_between_screenshots: 10,
             min_similar_screenshots_in_sequence: 6,
-            candidate_cache: CandidateCache::new(100),
+            max_candidates_in_cache: 100,
             index: InMemoryIndex::default(),
         }
     }
@@ -389,7 +359,7 @@ impl VideoStoreInner {
         v.num_threads = num_threads;
         v.num_seconds_between_screenshots = num_seconds_between_screenshots;
         v.min_similar_screenshots_in_sequence = min_similar_screenshots_in_sequence;
-        v.candidate_cache.max_candidates = max_candidates_in_cache;
+        v.max_candidates_in_cache = max_candidates_in_cache;
         let query = "SELECT * FROM videostore_parameters WHERE config_id = 1";
         match connection.prepare(query) {
             Ok(mut statement) => {
@@ -419,7 +389,7 @@ impl VideoStoreInner {
                                 }
                                 let s_opt = row.get(6);
                                 if s_opt.is_ok() {
-                                    v.candidate_cache.max_candidates = s_opt.unwrap();
+                                    v.max_candidates_in_cache = s_opt.unwrap();
                                 }
                                 break;
                             }
@@ -440,7 +410,7 @@ impl VideoStoreInner {
                 if v.sensitivity != sensitivity
                     || v.num_seconds_between_screenshots != num_seconds_between_screenshots
                     || v.min_similar_screenshots_in_sequence != min_similar_screenshots_in_sequence
-                    || v.candidate_cache.max_candidates != max_candidates_in_cache
+                    || v.max_candidates_in_cache != max_candidates_in_cache
                 {
                     // change the parameters in the database
                     let query_delete = "DELETE FROM videostore_parameters WHERE config_id = 1";
@@ -454,7 +424,7 @@ impl VideoStoreInner {
                     let sensitivity_i64 = v.sensitivity as i64;
                     match connection.execute(
                         "INSERT INTO videostore_parameters (config_id, sensitivity, start_directory, num_threads, num_seconds_between_screenshots, min_similar_screenshots_in_sequence, max_candidates_in_cache) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                        params![&1, &sensitivity_i64, &v.start_directory, &v.num_threads, &v.num_seconds_between_screenshots, &v.min_similar_screenshots_in_sequence, &v.candidate_cache.max_candidates],
+                        params![&1, &sensitivity_i64, &v.start_directory, &v.num_threads, &v.num_seconds_between_screenshots, &v.min_similar_screenshots_in_sequence, &v.max_candidates_in_cache],
                     ) {
                         Ok(retval) => log::warn!("Inserted {} data into parameter.", retval),
                         Err(error) => {
@@ -467,7 +437,7 @@ impl VideoStoreInner {
                     v.num_threads = num_threads;
                     v.num_seconds_between_screenshots = num_seconds_between_screenshots;
                     v.min_similar_screenshots_in_sequence = min_similar_screenshots_in_sequence;
-                    v.candidate_cache.max_candidates = max_candidates_in_cache;
+                    v.max_candidates_in_cache = max_candidates_in_cache;
                 }
             }
             Err(error) => {
@@ -622,50 +592,16 @@ impl VideoStoreInner {
         v
     }
 
-    /// Compute the `location` bucket for a given (coefindex, colorindex, sign)
-    /// triple. This is the same formula used by `add()` and `search_matches()`.
-    fn bucket_location(sign: u32, coefindex: u32, colorindex: u32) -> u32 {
-        sign * IMAGESCALE * IMAGESCALE * crate::haar::COLOURCHANNELS
-            + coefindex * crate::haar::COLOURCHANNELS
-            + colorindex
-            + 1
-    }
-
     /// Expand a single screenshot's hash into the list of `location` buckets it
     /// contributes to. Mirrors the inner loop of `add()` exactly, so the in-memory
     /// index stays consistent with the SQLite `videostore_indices` table.
+    ///
+    /// Delegates to `compute_score_plan`, which is the single source of truth for
+    /// the significant `(location, bin)` pairs (shared with the query hot path, §7).
     fn hash_bucket_locations(
         hash: &crate::hash::Hash,
     ) -> Vec<(u32 /* location */, u32 /* weight_bin */)> {
-        let mut out = Vec::new();
-        if hash.matrix.coefs.len() < 2 {
-            return out;
-        }
-        for coefindex in 1..hash.matrix.coefs.len() {
-            let coef = &hash.matrix.coefs[coefindex];
-            let y = coefindex / hash.matrix.width as usize;
-            let x = coefindex % hash.matrix.width as usize;
-            let mut bin = y as u32;
-            if (x as u32) > bin {
-                bin = x as u32;
-            }
-            if bin > 5 {
-                bin = 5;
-            }
-            for colorindex in 0..coef.c.len() {
-                let colorcoef = coef.c[colorindex];
-                if !crate::hash::coefficient_is_significant(
-                    colorcoef,
-                    hash.thresholds.c[colorindex],
-                ) {
-                    continue;
-                }
-                let sign = if colorcoef < 0.0 { 1u32 } else { 0u32 };
-                let location = Self::bucket_location(sign, coefindex as u32, colorindex as u32);
-                out.push((location, bin));
-            }
-        }
-        out
+        Self::compute_score_plan(hash)
     }
 
     /// Bulk-load the in-memory index from the database.
@@ -992,15 +928,23 @@ impl VideoStoreInner {
         }
         // Get the index.
         //let index = self.ids[id];
-        let query = "SELECT video_id FROM videostore_candidates WHERE filename = ?1";
+        // Read the 1-based candidate_id from the DB (the source of truth). The
+        // in-memory `self.ids` values use inconsistent 0/1-based conventions
+        // depending on whether the row was added vs. loaded, so we don't derive
+        // the candidate_id from them.
+        let mut candidate_id: Option<u32> = None;
+        let query = "SELECT candidate_id, video_id FROM videostore_candidates WHERE filename = ?1";
         match connection.prepare(query) {
             Ok(mut statement) => match statement.query(params![id]) {
                 Ok(mut rows) => {
                     while let Ok(Some(row)) = rows.next() {
-                        let s_opt = row.get(0);
-                        if s_opt.is_ok() {
-                            let video_id = s_opt.unwrap();
-                            self.video_ids.remove(&video_id);
+                        if candidate_id.is_none() {
+                            if let Ok(cid) = row.get::<_, u32>(0) {
+                                candidate_id = Some(cid);
+                            }
+                        }
+                        if let Ok(vid) = row.get::<_, u32>(1) {
+                            self.video_ids.remove(&vid);
                         }
                     }
                 }
@@ -1038,9 +982,10 @@ impl VideoStoreInner {
             log::error!("Failed to delete indices for {}!", id);
             return;
         }
-        // Rebuild the in-memory index to reflect the deletion.
-        // This is a rare operation, so the O(N) cost is acceptable.
-        self.bulk_load_index(connection);
+        // Incrementally remove from the in-memory index (§8).
+        if let Some(cid) = candidate_id {
+            self.index.remove_video(cid);
+        }
     }
 
     /// Exchange exchanges the ID of an image for a new one. If the old ID could not
@@ -1076,33 +1021,39 @@ impl VideoStoreInner {
         true
     }
 
-    /// Find all similar screenshots for a single screenshot.
-    /// Reads buckets and per-screenshot metadata from the in-memory index.
-    fn search_matches(
-        &self,
-        _client: &mut rusqlite::Connection,
-        hash: &crate::hash::Hash,
-        _video_ids: &std::collections::BTreeMap<u32, usize>,
-        scores: &mut Vec<f64>,
-        touched: &mut Vec<usize>,
-    ) -> crate::videomatches::VideoMatches {
-        let mut ms = crate::videomatches::VideoMatches::new();
-        if self.index.num_screenshots == 0 {
-            return ms;
+    /// Compute a cheap fingerprint for cache-keying the significant-location
+    /// list. Two hashes with the same dhash and thresholds will have the same
+    /// significant-coefficient pattern in practice.
+    fn hash_fingerprint(hash: &crate::hash::Hash) -> u64 {
+        use std::hash::{Hash as _, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        if let Some(d0) = hash.dhash.first() {
+            d0.hash(&mut h);
         }
+        if let Some(d1) = hash.dhash.get(1) {
+            d1.hash(&mut h);
+        }
+        for ch in 0..hash.thresholds.c.len() {
+            hash.thresholds.c[ch].to_bits().hash(&mut h);
+        }
+        h.finish()
+    }
 
-        // Examine hash buckets.
-        for coefindex in 0..hash.matrix.coefs.len() {
+    /// Compute the list of significant `(location, bin)` pairs for a hash.
+    /// This is the per-coefficient work that `search_matches` used to redo
+    /// on every query position; now it's computed once and cached (§7).
+    fn compute_score_plan(hash: &crate::hash::Hash) -> Vec<(u32, u32)> {
+        let mut out = Vec::new();
+        if hash.matrix.coefs.len() < 2 {
+            return out;
+        }
+        for coefindex in 1..hash.matrix.coefs.len() {
             let coef = &hash.matrix.coefs[coefindex];
-            if coefindex == 0 {
-                continue; // igore scaling function coefficient for now
-            }
-            // Calculate the weight bin outside the main loop.
             let y = coefindex / hash.matrix.width as usize;
             let x = coefindex % hash.matrix.width as usize;
-            let mut bin = y;
-            if x > y {
-                bin = x;
+            let mut bin = y as u32;
+            if (x as u32) > bin {
+                bin = x as u32;
             }
             if bin > 5 {
                 bin = 5;
@@ -1113,31 +1064,62 @@ impl VideoStoreInner {
                     colorcoef,
                     hash.thresholds.c[colorindex],
                 ) {
-                    // Coef is too small. Ignore.
                     continue;
                 }
-                // At this point, we have a coefficient which we want to look up
-                // in the index buckets.
-                let mut sign = 0;
-                if colorcoef < 0.0 {
-                    sign = 1;
-                }
+                let sign = if colorcoef < 0.0 { 1u32 } else { 0u32 };
                 let location = sign * IMAGESCALE * IMAGESCALE * crate::haar::COLOURCHANNELS
                     + coefindex as u32 * crate::haar::COLOURCHANNELS
                     + colorindex as u32
                     + 1;
-                let bucket = &self.index.buckets[location as usize];
-                for &g in bucket {
-                    if scores[g as usize].is_nan() {
-                        let mut score: f64 = 0.0;
-                        for colorid in 0..coef.c.len() {
-                            score += WEIGHTS[colorid][0];
-                        }
-                        scores[g as usize] = score;
-                        touched.push(g as usize);
+                out.push((location, bin));
+            }
+        }
+        out
+    }
+
+    /// Find all similar screenshots for a single screenshot.
+    /// Reads buckets and per-screenshot metadata from the in-memory index.
+    ///
+    /// `location_cache` memoizes the significant `(location, bin)` list per
+    /// distinct hash so that identical frames across screenshot positions
+    /// don't re-scan all 16,384 coefficients (§7).
+    fn search_matches(
+        &self,
+        _client: &mut rusqlite::Connection,
+        hash: &crate::hash::Hash,
+        _video_ids: &std::collections::BTreeMap<u32, usize>,
+        scores: &mut Vec<f64>,
+        touched: &mut Vec<usize>,
+        location_cache: &mut std::collections::HashMap<u64, Vec<(u32, u32)>>,
+    ) -> crate::videomatches::VideoMatches {
+        let mut ms = crate::videomatches::VideoMatches::new();
+        if self.index.num_screenshots == 0 {
+            return ms;
+        }
+
+        // Get (or compute and cache) the significant-location plan for this hash.
+        let fp = Self::hash_fingerprint(hash);
+        let plan: Vec<(u32, u32)>;
+        if let Some(cached) = location_cache.get(&fp) {
+            plan = cached.clone();
+        } else {
+            plan = Self::compute_score_plan(hash);
+            location_cache.insert(fp, plan.clone());
+        }
+
+        // Examine hash buckets using the precomputed plan.
+        for &(location, bin) in &plan {
+            let bucket = &self.index.buckets[location as usize];
+            for &g in bucket {
+                if scores[g as usize].is_nan() {
+                    let mut score: f64 = 0.0;
+                    for colorid in 0..3 {
+                        score += WEIGHTS[colorid][0];
                     }
-                    scores[g as usize] -= WEIGHTSUMS[bin as usize];
+                    scores[g as usize] = score;
+                    touched.push(g as usize);
                 }
+                scores[g as usize] -= WEIGHTSUMS[bin as usize];
             }
         }
         // Create matches from only the touched (scored) indices — avoids a
@@ -1226,6 +1208,10 @@ impl VideoStoreInner {
         // touched indices between positions (avoids O(corpus) alloc+fill per call).
         let mut scores: Vec<f64> = vec![f64::NAN; screenshot_index_global as usize];
         let mut touched: Vec<usize> = Vec::new();
+        // §7: cache significant-location plans per distinct hash so identical
+        // frames across positions don't re-scan all 16,384 coefficients.
+        let mut location_cache: std::collections::HashMap<u64, Vec<(u32, u32)>> =
+            std::collections::HashMap::new();
 
         // search for each screenshot of the current video in the store
         let report_interval = (5 * 60 / self.num_seconds_between_screenshots) as usize;
@@ -1237,6 +1223,7 @@ impl VideoStoreInner {
                 &self.index.video_ids,
                 &mut scores,
                 &mut touched,
+                &mut location_cache,
             );
             let mut previous_videos = std::collections::BTreeSet::new();
             for (key, _) in sequences.iter() {
@@ -1752,6 +1739,80 @@ impl VideoStore {
         log::warn!(
             "Migration complete: {} blob(s) re-encoded to compact format",
             migrated
+        );
+    }
+
+    /// Explain the scoring for a single screenshot hash: print the top bucket
+    /// hits with their accumulated scores. Useful for sensitivity tuning (§15).
+    pub fn explain_screenshot(&self, hash: &crate::hash::Hash, top_n: usize) {
+        let inner = self.inner.read().unwrap();
+        let index = &inner.index;
+        if index.num_screenshots == 0 {
+            eprintln!("explain: index is empty");
+            return;
+        }
+
+        let plan = VideoStoreInner::compute_score_plan(hash);
+        if plan.is_empty() {
+            eprintln!("explain: no significant coefficients for this hash");
+            return;
+        }
+
+        let mut scores: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
+        let base: f64 = (0..3).map(|c| WEIGHTS[c][0]).sum();
+        for &(location, bin) in &plan {
+            if (location as usize) >= index.buckets.len() {
+                continue;
+            }
+            for &g in &index.buckets[location as usize] {
+                let entry = scores.entry(g).or_insert(base);
+                *entry -= WEIGHTSUMS[bin as usize];
+            }
+        }
+
+        let mut sorted: Vec<(u32, f64)> = scores.into_iter().collect();
+        sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        eprintln!(
+            "explain: {} scored candidates (showing top {})",
+            sorted.len(),
+            top_n
+        );
+        eprintln!("  sensitivity threshold: {}", inner.sensitivity);
+        for &(g, score) in sorted.iter().take(top_n) {
+            if (g as usize) >= index.screenshots.len() {
+                continue;
+            }
+            let shot = &index.screenshots[g as usize];
+            let name = index
+                .video_ids
+                .get(&shot.video_id)
+                .and_then(|&pos| index.metas.get(pos))
+                .map(|m| m.id.as_str())
+                .unwrap_or("<unknown>");
+            let dhash_dist = crate::hamming::hamming_distance(
+                shot.dhash0,
+                hash.dhash.first().copied().unwrap_or(0),
+            ) + crate::hamming::hamming_distance(
+                shot.dhash1,
+                hash.dhash.get(1).copied().unwrap_or(0),
+            );
+            let hist_dist = crate::hamming::hamming_distance(shot.histogram, hash.histogram);
+            eprintln!(
+                "  g={} {} shot={} tc={}s score={:.2} dhash={} hist={}",
+                g, name, shot.screenshot_id, shot.timecode, score, dhash_dist, hist_dist
+            );
+        }
+    }
+
+    /// Print a one-line metrics summary for the in-memory index (§15).
+    pub fn print_metrics(&self) {
+        let inner = self.inner.read().unwrap();
+        let total_entries: usize = inner.index.buckets.iter().map(|b| b.len()).sum();
+        let non_empty: usize = inner.index.buckets.iter().filter(|b| !b.is_empty()).count();
+        eprintln!(
+            "metrics: {} videos | {} screenshots | {} non-empty buckets | {} total bucket entries",
+            inner.num_candidates, inner.index.num_screenshots, non_empty, total_entries
         );
     }
 

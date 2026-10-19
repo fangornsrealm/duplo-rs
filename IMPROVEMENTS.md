@@ -22,11 +22,11 @@ Impact legend: **[H]**igh · **[M]**edium · **[L]**ow. Effort: **S** ≤ ~1 hr,
 | §13 | Remove `process::exit(2)` / `panic!` in presentation | ✅ Done | `e21fe3c` |
 | §14 | Video test suite (7 new tests) + 3 bug fixes | ✅ Done | `bd70469` |
 | §1 | Compact per-screenshot storage (~200× BLOB reduction) + migration | ✅ Done | `0a4f0ef` |
-| §12 | Remove vestigial state (`candidate_cache`, `num_indices`, …) | ⏳ | — |
-| §7 | Cache significant-location list per hash | ⏳ (likely) | — |
-| §8 | `delete` incremental instead of full rebuild | ⏳ | — |
-| §11 | Marshalling endianness | ⏳ | — |
-| §15 | Observability: metrics, `--explain` mode | ⏳ | — |
+| §12 | Remove vestigial state (`candidate_cache`, `num_images`) | ✅ Done | pending |
+| §7 | Cache significant-location list per hash (memoized in `search_matches`) | ✅ Done | pending |
+| §8 | `delete` incremental via `InMemoryIndex::remove_video` (no full rebuild) | ✅ Done | pending |
+| §11 | Marshalling endianness | ⏳ Deferred (format change; local files, same-arch — see note) | — |
+| §15 | Observability: `explain_screenshot()` + `print_metrics()` | ✅ Done | pending |
 | §16 | Purpose-built mmap index / two-pass / LMDB / content-hash / tokio | ⏳ | — |
 
 ---
@@ -413,3 +413,17 @@ cheap fix is high value.
 - `delete()` read `video_id` from column 1 of a 1-column SELECT (off-by-one)
 - `exchange()` SQL was missing `SET` keyword: `UPDATE … filename = ?1 WHERE …`
 - `delete()` never decremented `num_candidates`, so `size()` returned a stale value
+
+*§11 deferred.* Marshalling uses big-endian (`to_be_bytes`). Switching to
+native-endian would be a **format change** that breaks reading of every
+existing `.store` and SQLite BLOB written in big-endian. Since the files are
+local and always read back on the same architecture, the byte-swap cost is
+negligible and the risk of data loss is not worth it. Revisit only if
+cross-architecture portability of the `.store` files becomes a requirement.
+
+*Additional bug found by §8 (fixed in this batch):*
+- `delete()` derived the 1-based `candidate_id` from `self.ids` (which mixes
+  0-based and 1-based values depending on the code path that populated it),
+  so `InMemoryIndex::remove_video` was called with the wrong id and the
+  wrong video's screenshots were removed. Fixed by reading the authoritative
+  `candidate_id` from the `videostore_candidates` table.

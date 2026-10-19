@@ -105,7 +105,7 @@ let (matches, failedid, _failedhash) =
 // matches[0] is the best match.
 ```
 
-The search for similar videos in the database has to be done one by one. The speed is severely limited. Each new video will be compared screenshot by screenshot. As a rough estimate with six screenshots a minute the comparison takes 1 to 2 minutes for five minutes of video. If you have memory to spend, the library offers to store the last N used videos data in memory for speeding up the search. But for 100 videos this will block 10 to 15 Gigabytes of the memmory of the machine for as long as the program runs! Fro the default settings of the demo app.
+The search for similar videos in the database has to be done one by one. The speed is severely limited. Each new video will be compared screenshot by screenshot. As a rough estimate with six screenshots a minute the comparison takes 1 to 2 minutes for five minutes of video. If you have memory to spend, the library offers to store the last N used videos data in memory for speeding up the search. But for 100 videos this will block 10 to 15 Gigabytes of the memmory of the machine for as long as the program runs! For the default settings of the demo app.
 
 A trade-off between the running time and the quality of similar video detection is necessary depending on what needs to be detected.
 
