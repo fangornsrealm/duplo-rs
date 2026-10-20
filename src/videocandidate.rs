@@ -115,6 +115,44 @@ pub struct VideoCandidate {
 }
 
 impl VideoCandidate {
+    /// Compute a stable content fingerprint independent of the filename.
+    ///
+    /// Uses the dhash and histogram of the first and last screenshots (the
+    /// most stable content signal) to detect renamed duplicates (§16.4).
+    /// Two videos with the same fingerprint are almost certainly the same
+    /// content under a different name.
+    pub fn content_fingerprint(&self) -> u64 {
+        use std::hash::{Hash as _, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        // Include basic geometry (a different aspect ratio means different content).
+        self.width.hash(&mut h);
+        self.height.hash(&mut h);
+        self.runtime.hash(&mut h);
+        // Hash the first screenshot's perceptual identity.
+        if let Some(first) = self.screenshots.first() {
+            if let Some(d0) = first.hash.dhash.first() {
+                d0.hash(&mut h);
+            }
+            if let Some(d1) = first.hash.dhash.get(1) {
+                d1.hash(&mut h);
+            }
+            first.hash.histogram.hash(&mut h);
+        }
+        // Hash the last screenshot's perceptual identity.
+        if let Some(last) = self.screenshots.last() {
+            if let Some(d0) = last.hash.dhash.first() {
+                d0.hash(&mut h);
+            }
+            if let Some(d1) = last.hash.dhash.get(1) {
+                d1.hash(&mut h);
+            }
+            last.hash.histogram.hash(&mut h);
+        }
+        h.finish()
+    }
+}
+
+impl VideoCandidate {
     pub fn new() -> Self {
         let v: VideoCandidate = VideoCandidate {
             ..Default::default()

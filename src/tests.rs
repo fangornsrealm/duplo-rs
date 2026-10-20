@@ -1318,3 +1318,77 @@ fn test_migration_v1_to_v2() {
     let _ = std::fs::remove_file(&dbpath.with_extension("db-wal"));
     let _ = std::fs::remove_file(&dbpath.with_extension("db-shm"));
 }
+
+// ---------------------------------------------------------------------------
+// Content fingerprint: renamed-duplicate detection (§16.4).
+//
+// Two candidates with the same content (same geometry + same first/last
+// perceptual hashes) must produce the same fingerprint, even under a
+// different filename. The store's content_fingerprint_lookup should find the
+// stored video, so the demo can skip re-adding the renamed duplicate.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_content_fingerprint_dedup() {
+    use base64::{engine::general_purpose, Engine as _};
+
+    let bytes_a = general_purpose::STANDARD.decode(IMGA.as_bytes()).unwrap();
+    let img_a = image::load_from_memory_with_format(&bytes_a, image::ImageFormat::Jpeg).unwrap();
+    let (hash_a, _) = crate::hash::create_hash(&img_a.into());
+
+    let make_video = |id: &str, idx: u32| {
+        let mut v = crate::videocandidate::VideoCandidate::from(id, idx as usize);
+        v.width = 64;
+        v.height = 64;
+        v.runtime = 80;
+        for shot in 0..8u32 {
+            v.screenshots.push(crate::videocandidate::Screenshot::from(
+                id,
+                idx as usize,
+                shot as usize,
+                shot * 10,
+                &hash_a,
+            ));
+        }
+        v
+    };
+
+    // Same content, two different filenames (a "rename" scenario).
+    let orig = make_video("/tmp/orig.mp4", 1);
+    let renamed = make_video("/tmp/renamed_copy.mp4", 2);
+
+    // Fingerprint must be filename-independent.
+    assert_eq!(
+        orig.content_fingerprint(),
+        renamed.content_fingerprint(),
+        "fingerprint must not depend on the filename"
+    );
+
+    // Different content (different geometry) must differ.
+    let mut different = make_video("/tmp/different.mp4", 3);
+    different.width = 128; // different aspect ratio
+    assert_ne!(
+        orig.content_fingerprint(),
+        different.content_fingerprint(),
+        "different geometry should give a different fingerprint"
+    );
+
+    // The store should find the stored video via the renamed candidate's fingerprint.
+    let conn = crate::videostore::connect(":memory:").unwrap();
+    let store = crate::videostore::VideoStore::new(conn, -20.0, "/tmp", 1, 10, 6, 10);
+    store.add("/tmp/orig.mp4", &orig, orig.runtime);
+    assert_eq!(store.size(), 1);
+
+    let found = store.content_fingerprint_lookup(&renamed);
+    assert_eq!(
+        found.as_deref(),
+        Some("/tmp/orig.mp4"),
+        "renamed duplicate should resolve to the stored video"
+    );
+
+    // A genuinely different video should not match.
+    let none = store.content_fingerprint_lookup(&different);
+    assert!(
+        none.is_none(),
+        "a different video should not be detected as a duplicate"
+    );
+}

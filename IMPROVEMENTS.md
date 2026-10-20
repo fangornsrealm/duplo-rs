@@ -27,7 +27,11 @@ Impact legend: **[H]**igh · **[M]**edium · **[L]**ow. Effort: **S** ≤ ~1 hr,
 | §8 | `delete` incremental via `InMemoryIndex::remove_video` (no full rebuild) | ✅ Done | `207fe6a` |
 | §11 | Marshalling endianness | ⏳ Deferred (format change; local files, same-arch — see note) | — |
 | §15 | Observability: `explain_screenshot()` + `print_metrics()` | ✅ Done | `207fe6a` |
-| §16 | Purpose-built mmap index / two-pass / LMDB / content-hash / tokio | ⏳ | — |
+| §16.2 | Two-pass scoring (collect candidates, then score) | ✅ Done | (was already implemented) |
+| §16.4 | Content-hash dedup (renamed duplicates) | ✅ Done | pending |
+| §16.1 | Purpose-built mmap index file | ⏳ Deferred (useful only at >50k videos) | — |
+| §16.3 | LMDB instead of SQLite | ⏳ Deferred (not needed after §1 compact storage) | — |
+| §16.5 | tokio-friendly facade | ⏳ Deferred (tool is not async) | — |
 
 ---
 
@@ -427,3 +431,15 @@ cross-architecture portability of the `.store` files becomes a requirement.
   so `InMemoryIndex::remove_video` was called with the wrong id and the
   wrong video's screenshots were removed. Fixed by reading the authoritative
   `candidate_id` from the `videostore_candidates` table.
+
+*§16 status notes.*
+- **Two-pass scoring (§16.2)** was already the architecture: `search_matches`
+  accumulates cheap weighted scores into `scores[]` (Pass 1), then computes
+  the expensive hamming-distance only for survivors (Pass 2). No change needed.
+- **Content-hash dedup (§16.4)**: `VideoCandidate::content_fingerprint()`
+  hashes (width, height, runtime, first+last screenshot dhash/histogram) to
+  detect renamed duplicates. The demo writer calls
+  `content_fingerprint_lookup()` before `add()` and skips the duplicate.
+- **Mmap index (§16.1)**, **LMDB (§16.3)**, **tokio (§16.5)**: deferred.
+  The mmap index only outperforms SQLite at >50k videos; LMDB is unnecessary
+  after §1 eliminated the 400 KB BLOBs; the tool is synchronous end-to-end.

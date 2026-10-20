@@ -20,9 +20,9 @@ use std::sync::mpsc;
 /// Depending on the length of the videos even 96 GB of RAM will be filled with around 1000 videos.
 /// The data blobs and the indices are stored in a SQLite database.
 /// 1 TB of storage will suffice for 10 000 to 15 000 videos, depending on the length.
-/// 
+///
 /// The search for similar videos in the database has to be done one by one.
-/// The speed is severely limited. Each new video will be compared screenshot by screenshot. 
+/// The speed is severely limited. Each new video will be compared screenshot by screenshot.
 /// A rough estimate is one minute for five minutes of video. There is a cache of the previously compared videos.
 /// Reading the data from the database costs time. The more memory you can spare for the Cache, the faster the comparison.
 /// But be careful. As long as the program is running the Memory will be blocked by the Cache.
@@ -36,7 +36,7 @@ use std::sync::mpsc;
 /// With six matches in a row you can find compilations down to one minute of runtime per video.
 /// A screenshot every five minutes would be much faster and use 30x less resources, but only find the same file that has been cut in the end.
 /// The chance to find a similar scene with a distance of two and a half minutes in average is next to zero unless you screen security footage of an empty hallway.
-/// 
+///
 /// You can stop a scan at any time. Any video that has already been parsed will not be parsed again.
 /// It's data will be deleted if the file is no longer available.
 ///
@@ -63,9 +63,21 @@ pub fn main() {
         .arg(Arg::new("directory").short('d').long("directory"))
         .arg(Arg::new("sensitivity").short('s').long("sensitivity"))
         .arg(Arg::new("num_threads").short('t').long("num_threads"))
-        .arg(Arg::new("num_seconds_between_screenshots").short('b').long("num_seconds_between_screenshots"))
-        .arg(Arg::new("min_similar_screenshots_in_sequence").short('m').long("min_similar_screenshots_in_sequence"))
-        .arg(Arg::new("max_candidates_in_cache").short('c').long("max_candidates_in_cache"))
+        .arg(
+            Arg::new("num_seconds_between_screenshots")
+                .short('b')
+                .long("num_seconds_between_screenshots"),
+        )
+        .arg(
+            Arg::new("min_similar_screenshots_in_sequence")
+                .short('m')
+                .long("min_similar_screenshots_in_sequence"),
+        )
+        .arg(
+            Arg::new("max_candidates_in_cache")
+                .short('c')
+                .long("max_candidates_in_cache"),
+        )
         .arg(
             Arg::new("recursive")
                 .short('r')
@@ -110,8 +122,8 @@ pub fn main() {
             num_threads = ret.unwrap() as u32;
         }
     }
-    println!("Sensitivity {}\nStartdirectory {}\nnum_threads {}\nnum sec betw. screenshots {}\nmin similar screenshots in sequence {}\nnum candidates in cache {}", 
-        sensitivity, 
+    println!("Sensitivity {}\nStartdirectory {}\nnum_threads {}\nnum sec betw. screenshots {}\nmin similar screenshots in sequence {}\nnum candidates in cache {}",
+        sensitivity,
         directory,
         num_threads,
         num_seconds_between_screenshots,
@@ -182,10 +194,16 @@ pub fn main() {
         let num_query_workers = (num_threads.max(1)) as usize;
 
         // Shared receiver (Mutex) so multiple query workers can pull work.
-        let (parse_tx, parse_rx) = mpsc::sync_channel::<(u32, duplo_rs::videocandidate::VideoCandidate)>(num_query_workers * 2);
+        let (parse_tx, parse_rx) = mpsc::sync_channel::<(
+            u32,
+            duplo_rs::videocandidate::VideoCandidate,
+        )>(num_query_workers * 2);
         let parse_rx = std::sync::Arc::new(std::sync::Mutex::new(parse_rx));
         // Results from query workers to the single writer.
-        let (result_tx, result_rx) = mpsc::channel::<(duplo_rs::videocandidate::VideoCandidate, duplo_rs::videomatches::VideoMatches)>();
+        let (result_tx, result_rx) = mpsc::channel::<(
+            duplo_rs::videocandidate::VideoCandidate,
+            duplo_rs::videomatches::VideoMatches,
+        )>();
         let result_rx = std::sync::Arc::new(std::sync::Mutex::new(result_rx));
 
         let filelist = std::sync::Arc::new(filelist);
@@ -200,7 +218,8 @@ pub fn main() {
             let store = store.clone();
             let mut video_id_counter = starting_candidate + 1;
             let mut in_flight = 0usize;
-            let mut handles: std::collections::VecDeque<std::thread::JoinHandle<()>> = std::collections::VecDeque::new();
+            let mut handles: std::collections::VecDeque<std::thread::JoinHandle<()>> =
+                std::collections::VecDeque::new();
             let mut filepos = 0usize;
 
             loop {
@@ -237,7 +256,13 @@ pub fn main() {
                 let num_seconds = store.num_seconds_between_screenshots();
                 let tx = parse_tx.clone();
                 let handle = std::thread::spawn(move || {
-                    let video = duplo_rs::files::process_video(&filepath, video_id as usize, num_videos, num_seconds, next_pos as u32);
+                    let video = duplo_rs::files::process_video(
+                        &filepath,
+                        video_id as usize,
+                        num_videos,
+                        num_seconds,
+                        next_pos as u32,
+                    );
                     let _ = tx.send((video_id, video));
                 });
                 in_flight += 1;
@@ -293,7 +318,11 @@ pub fn main() {
                 Ok(v) => v,
                 Err(_) => break,
             };
-            log::warn!("Found {} matches for video {}.", videomatches.len(), video.id);
+            log::warn!(
+                "Found {} matches for video {}.",
+                videomatches.len(),
+                video.id
+            );
             progressbar.inc();
             let mut compare: Vec<duplo_rs::videocandidate::VideoCandidate> = Vec::new();
             compare.push(video.clone());
@@ -304,6 +333,18 @@ pub fn main() {
                     if !candidate.id.is_empty() {
                         compare.push(candidate);
                     }
+                }
+            }
+            // §16.4: skip renamed duplicates — if this content is already in
+            // the store under a different name, don't add it again.
+            if let Some(existing_id) = store.content_fingerprint_lookup(&video) {
+                if existing_id != video.id {
+                    log::warn!(
+                        "Skipping {} — content already stored as {}",
+                        video.id,
+                        existing_id
+                    );
+                    continue;
                 }
             }
             store.add(&video.id, &video, video.runtime);

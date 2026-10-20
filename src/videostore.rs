@@ -1909,6 +1909,51 @@ impl VideoStore {
         )
     }
 
+    /// Look up a stored video by content fingerprint (renamed-duplicate
+    /// detection, §16.4). Returns the filename of the first stored video whose
+    /// (width, height, runtime, first+last screenshot dhash/histogram) matches
+    /// the given candidate, or `None` if no match is found.
+    ///
+    /// This is O(num_videos) over the in-memory index — cheap because it only
+    /// reads the compact `VideoMeta` + first/last `ScreenMeta` per video.
+    pub fn content_fingerprint_lookup(
+        &self,
+        candidate: &crate::videocandidate::VideoCandidate,
+    ) -> Option<String> {
+        let inner = self.inner.read().unwrap();
+        let target = candidate.content_fingerprint();
+        let index = &inner.index;
+
+        for meta in index.metas.iter() {
+            // Reconstruct the fingerprint from the stored meta + first/last screenshot.
+            use std::hash::{Hash as _, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            meta.width.hash(&mut h);
+            meta.height.hash(&mut h);
+            meta.runtime.hash(&mut h);
+            // Find this video's screenshots.
+            let video_shots: Vec<_> = index
+                .screenshots
+                .iter()
+                .filter(|s| s.video_id == meta.candidate_id)
+                .collect();
+            if let Some(first) = video_shots.first() {
+                first.dhash0.hash(&mut h);
+                first.dhash1.hash(&mut h);
+                first.histogram.hash(&mut h);
+            }
+            if let Some(last) = video_shots.last() {
+                last.dhash0.hash(&mut h);
+                last.dhash1.hash(&mut h);
+                last.histogram.hash(&mut h);
+            }
+            if h.finish() == target {
+                return Some(meta.id.clone());
+            }
+        }
+        None
+    }
+
     /// Test/debug helper: how many screenshots are filed under a given location.
     pub fn debug_bucket_len(&self, location: u32) -> usize {
         let inner = self.inner.read().unwrap();
