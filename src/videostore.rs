@@ -2,6 +2,7 @@
 use log;
 use rusqlite::{params, Connection, Result};
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 static WEIGHTS: [[f64; 6]; 3] = [
@@ -1577,6 +1578,10 @@ impl VideoStoreInner {
 pub struct VideoStore {
     inner: RwLock<VideoStoreInner>,
     conn: Arc<Mutex<rusqlite::Connection>>,
+    /// Shared stop flag.  Set to `true` to signal every worker (producer,
+    /// query, writer) to wind down promptly.  Wired to Ctrl-C in the demo
+    /// and usable as a programmatic abort mechanism from any thread.
+    stop_flag: Arc<AtomicBool>,
 }
 
 impl VideoStore {
@@ -1612,6 +1617,7 @@ impl VideoStore {
         let store = VideoStore {
             inner: RwLock::new(inner),
             conn,
+            stop_flag: Arc::new(AtomicBool::new(false)),
         };
         // Migrate existing v1 blobs (full matrix) to v2 compact format.
         // This is a no-op if the database already has the `schema_version`
@@ -1837,6 +1843,27 @@ impl VideoStore {
         let mut inner = self.inner.write().unwrap();
         let mut conn_guard = self.conn.lock().unwrap();
         inner.delete(&mut *conn_guard, id)
+    }
+
+    // ------------------------------------------------------------------
+    // §9 — graceful shutdown / back-pressure support.
+    // ------------------------------------------------------------------
+
+    /// Returns a `Clone`-able handle to the store's stop flag so that worker
+    /// threads can check it without holding the store lock.
+    pub fn stop_flag(&self) -> Arc<AtomicBool> {
+        self.stop_flag.clone()
+    }
+
+    /// Convenience: set the stop flag to `true`.  Every thread holding a
+    /// clone of the flag will observe it on the next check.
+    pub fn request_stop(&self) {
+        self.stop_flag.store(true, Ordering::SeqCst);
+    }
+
+    /// Returns `true` if a stop has been requested.
+    pub fn stop_requested(&self) -> bool {
+        self.stop_flag.load(Ordering::SeqCst)
     }
 
     pub fn exchange(&self, oldid: &str, newid: &str) -> bool {

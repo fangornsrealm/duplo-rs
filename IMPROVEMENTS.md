@@ -25,6 +25,7 @@ Impact legend: **[H]**igh · **[M]**edium · **[L]**ow. Effort: **S** ≤ ~1 hr,
 | §12 | Remove vestigial state (`candidate_cache`, `num_images`) | ✅ Done | `207fe6a` |
 | §7 | Cache significant-location list per hash (memoized in `search_matches`) | ✅ Done | `207fe6a` |
 | §8 | `delete` incremental via `InMemoryIndex::remove_video` (no full rebuild) | ✅ Done | `207fe6a` |
+| §9 | Concurrency: shared stop-flag + Ctrl-C handler + deadlock-free bounded pool | ✅ Done | `4f5e6db` |
 | §11 | Marshalling endianness | ⏳ Deferred (format change; local files, same-arch — see note) | — |
 | §15 | Observability: `explain_screenshot()` + `print_metrics()` | ✅ Done | `207fe6a` |
 | §16.2 | Two-pass scoring (collect candidates, then score) | ✅ Done | (was already implemented) |
@@ -271,20 +272,32 @@ case.
 
 ---
 
-## 9. Concurrency & thread model   [M]
+## 9. Concurrency & thread model   [M] [done]
 
-- **Replace the hand-rolled pool with a real one.** The demo's producer loop
-  (`examples/demo_similar_videos.rs`) manually manages a `VecDeque` of handles
-  and a bounded `sync_channel`, and emits a spurious `in_flight` warning.
-  `rayon` is already a transitive dependency; a `scope`-based or `rayon`
-  pool would be shorter and less error-prone.
-- **Back-pressure is currently by channel fullness only.** Consider a shared
-  "stop on error" flag (a `Arc<AtomicBool>`) so that if the writer fails, the
-  producers and query workers wind down promptly rather than finishing all
-  their work.
-- **Ctrl-C / graceful shutdown.** There is a `CTRL_C_PRESSED` flag in
-  `src/videostore.rs` that is never wired up. Hook a signal handler to set it
-  and check it in the producer and query loops.
+Implemented. The hand-rolled producer pool, the missing back-pressure stop
+flag, and the never-wired `CTRL_C_PRESSED` flag are all in place now.
+
+- **Bounded, deadlock-free producer pool.** The old producer reaped workers in
+  FIFO order with `VecDeque::pop_front().join()`, which **deadlocked**: it
+  joined the first-spawned worker while that worker was blocked on a full
+  `sync_channel`, so the other workers (the ones that could drain the channel)
+  were never joined. The pool was replaced with an `Arc<AtomicUsize>` in-flight
+  counter (a semaphore): the producer waits for a free slot, spawns, and only
+  after the whole file list is exhausted joins *all* workers in any order.
+  Workers hand off with `try_send` so a full/closed channel can never wedge a
+  worker. (rayon was intentionally **not** added — it is only a transitive
+  dependency via `image`/`ravif`, and the std semaphore is sufficient here.)
+- **Shared stop flag (back-pressure).** `VideoStore` now owns an
+  `Arc<AtomicBool>` exposed via `stop_flag()`, `request_stop()`, and
+  `stop_requested()`. A single flag is cloned into every worker, so any thread
+  (or a signal handler) can abort the whole pipeline promptly.
+- **Ctrl-C / graceful shutdown.** `demo_similar_videos` installs a `SIGINT`
+  handler (`signal(2, …)`, no new crate dependency) that sets a global
+  `AtomicBool`; a forwarder thread polls it and calls `store.request_stop()`.
+  The producer, the query workers, and the writer all check
+  `stop_requested()` at the top of their loops and wind down immediately.
+  (The old `CTRL_C_PRESSED: bool` statics in `store.rs` / `videostore.rs`
+  remain as harmless vestigial constants — see §12.)
 
 ---
 

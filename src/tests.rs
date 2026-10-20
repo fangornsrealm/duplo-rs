@@ -1697,3 +1697,45 @@ fn test_fractional_fps_reports_correct_dimensions() {
         "at least one fractional-fps test file must be present and checked"
     );
 }
+
+// ---------------------------------------------------------------------------
+// §9 — Stop-flag API: request_stop / stop_requested / stop_flag.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_video_store_stop_flag() {
+    let conn = crate::videostore::connect(":memory:").unwrap();
+    let store = crate::videostore::VideoStore::new(conn, -20.0, "/tmp", 1, 10, 6, 10);
+
+    // Initially not stopped.
+    assert!(
+        !store.stop_requested(),
+        "stop_requested should be false on a fresh store"
+    );
+
+    // Request stop.
+    store.request_stop();
+
+    // Now observed as stopped.
+    assert!(
+        store.stop_requested(),
+        "stop_requested should be true after request_stop()"
+    );
+
+    // The Arc<AtomicBool> handle is a working clone that observes the same state.
+    let flag = store.stop_flag();
+    assert!(
+        flag.load(std::sync::atomic::Ordering::SeqCst),
+        "stop_flag() handle should reflect the stopped state"
+    );
+
+    // Setting the flag directly also works (e.g. from a signal handler thread).
+    let conn2 = crate::videostore::connect(":memory:").unwrap();
+    let store2 = crate::videostore::VideoStore::new(conn2, -20.0, "/tmp", 1, 10, 6, 10);
+    assert!(!store2.stop_requested());
+    let flag2 = store2.stop_flag();
+    flag2.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        store2.stop_requested(),
+        "setting stop_flag() directly should be observable via stop_requested()"
+    );
+}

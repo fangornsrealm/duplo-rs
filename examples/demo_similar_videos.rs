@@ -47,6 +47,41 @@ use std::sync::mpsc;
 /// Each HTML file contains a preview of the new file on top and any previous read videos who have at least a minute of similar video.
 /// The file path and video metadata are given for each file. The HTML file works for Chromium based browsers. MP4 files also work in Firefox.
 ///
+// ── §9: Ctrl-C / graceful shutdown ──────────────────────────────────────
+// A SIGINT handler sets CTRL_C_SEEN; a background thread polls it and
+// calls VideoStore::request_stop() so every worker winds down promptly.
+// No new crate dependency — uses the `signal()` syscall directly.
+static CTRL_C_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(unix)]
+extern "C" {
+    fn signal(signum: i32, handler: usize) -> usize;
+}
+
+#[cfg(unix)]
+extern "C" fn _on_sigint(_: i32) {
+    CTRL_C_SEEN.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Install a SIGINT handler and a forwarder thread that polls
+/// CTRL_C_SEEN every 200 ms and calls `store.request_stop()`.
+fn install_ctrl_c_handler(store: &std::sync::Arc<duplo_rs::videostore::VideoStore>) {
+    #[cfg(unix)]
+    unsafe {
+        let _ = signal(2, _on_sigint as *const () as usize); // 2 = SIGINT
+    }
+    let store2 = store.clone();
+    std::thread::spawn(move || loop {
+        if CTRL_C_SEEN.load(std::sync::atomic::Ordering::SeqCst) {
+            eprintln!("\n[Ctrl-C] Requesting stop…");
+            store2.request_stop();
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    });
+}
+// ─────────────────────────────────────────────────────────────────────────
+
 pub fn main() {
     let mut logfile = "demo_similar_videos.txt".to_string();
     let mut recursive = false;
@@ -189,6 +224,9 @@ pub fn main() {
         );
         let store = std::sync::Arc::new(store);
 
+        // §9: Wire up Ctrl-C so the user can stop a long scan at any time.
+        install_ctrl_c_handler(&store);
+
         let num_videos = filelist.len() as u32;
         let starting_candidate = store.num_candidates();
         let num_query_workers = (num_threads.max(1)) as usize;
@@ -211,34 +249,40 @@ pub fn main() {
         // ------------------------------------------------------------------
         // Producer: walks the file list, spawns ffmpeg workers (bounded by
         // num_threads), and feeds parsed videos into the shared parse_rx.
+        //
+        // §9: Bounded concurrency via an AtomicUsize counter (replaces the
+        // old FIFO-reap which deadlocked when the first-spawned worker was
+        // the slowest to finish). Workers use try_send so they cannot block
+        // indefinitely on a full channel (e.g. after Ctrl-C when query
+        // workers have exited).
         // ------------------------------------------------------------------
         {
             let parse_tx = parse_tx.clone();
             let filelist = filelist.clone();
             let store = store.clone();
             let mut video_id_counter = starting_candidate + 1;
-            let mut in_flight = 0usize;
-            let mut handles: std::collections::VecDeque<std::thread::JoinHandle<()>> =
-                std::collections::VecDeque::new();
+            let in_flight: std::sync::Arc<std::sync::atomic::AtomicUsize> =
+                std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let max_in_flight = num_threads.max(1) as usize;
+            let mut handles: Vec<std::thread::JoinHandle<()>> = Vec::new();
             let mut filepos = 0usize;
 
             loop {
-                // Reap finished workers so we keep at most num_threads in flight.
-                while in_flight as u32 > num_threads {
-                    if let Some(front) = handles.pop_front() {
-                        let _ = front.join();
-                        in_flight -= 1;
-                    } else {
-                        break;
-                    }
+                // §9: stop promptly if the user pressed Ctrl-C.
+                if store.stop_requested() {
+                    log::warn!("Stop requested — producer winding down.");
+                    break;
+                }
+                if filepos >= filelist.len() {
+                    break;
                 }
 
-                if filepos >= filelist.len() {
-                    // Drain any in-flight workers before exiting.
-                    while let Some(front) = handles.pop_front() {
-                        let _ = front.join();
+                // Wait for a free slot before spawning.
+                while in_flight.load(std::sync::atomic::Ordering::SeqCst) >= max_in_flight {
+                    if store.stop_requested() {
+                        break;
                     }
-                    break;
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                 }
 
                 let filepath = filelist[filepos].clone();
@@ -255,6 +299,7 @@ pub fn main() {
                 video_id_counter += 1;
                 let num_seconds = store.num_seconds_between_screenshots();
                 let tx = parse_tx.clone();
+                let inflight = in_flight.clone();
                 let handle = std::thread::spawn(move || {
                     let video = duplo_rs::files::process_video(
                         &filepath,
@@ -263,10 +308,23 @@ pub fn main() {
                         num_seconds,
                         next_pos as u32,
                     );
-                    let _ = tx.send((video_id, video));
+                    // §9: try_send so the worker can never block indefinitely
+                    // on a full channel (e.g. after Ctrl-C).
+                    if tx.try_send((video_id, video)).is_err() {
+                        log::warn!(
+                            "try_send failed for video {} (channel full or closed)",
+                            video_id
+                        );
+                    }
+                    inflight.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                 });
-                in_flight += 1;
-                handles.push_back(handle);
+                in_flight.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                handles.push(handle);
+            }
+
+            // §9: Join all workers in any order (no FIFO constraint).
+            for h in handles {
+                let _ = h.join();
             }
         }
         // Drop the producer's sender so workers see EOF.
@@ -284,6 +342,10 @@ pub fn main() {
                 let store = store.clone();
                 let h = std::thread::spawn(move || {
                     loop {
+                        // §9: stop promptly if the user pressed Ctrl-C.
+                        if store.stop_requested() {
+                            break;
+                        }
                         // Grab one item from the shared receiver, if any.
                         let item = {
                             let guard = parse_rx.lock().unwrap();
@@ -314,6 +376,11 @@ pub fn main() {
         // ------------------------------------------------------------------
         let result_rx_guard = result_rx.lock().unwrap();
         loop {
+            // §9: stop promptly if the user pressed Ctrl-C.
+            if store.stop_requested() {
+                log::warn!("Stop requested — writer winding down.");
+                break;
+            }
             let (video, videomatches) = match result_rx_guard.recv() {
                 Ok(v) => v,
                 Err(_) => break,
