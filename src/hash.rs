@@ -261,7 +261,7 @@ pub fn dhash(img: &image::RgbaImage) -> Vec<u64> {
                     bits[0] |= 1 << ypos;
                     ypos += 1;
                 }
-                if y & 1 == 0 {
+                if y & 1 == 0 && y + 1 < scaled.height() {
                     let (_, cbbr, crbr) = ycbcr(scaled.get_pixel(x, y + 1));
                     if (cbbr as u32 + cbtr as u32) >> 1 & 0x80 > 0 {
                         bits[1] |= 1 << cbpos;
@@ -279,7 +279,7 @@ pub fn dhash(img: &image::RgbaImage) -> Vec<u64> {
                     bits[0] |= 1 << ypos;
                     ypos += 1;
                 }
-                if y & 1 == 0 {
+                if y & 1 == 0 && y + 1 < scaled.height() {
                     let (_, cbbr, crbr) = ycbcr(scaled.get_pixel(x, y + 1));
                     let (_, cbbl, crbl) = ycbcr(scaled.get_pixel(x - 1, y + 1));
                     if (cbbr as u32 + cbtr as u32) >> 1 > (cbbl as u32 + cbtl as u32) >> 1 {

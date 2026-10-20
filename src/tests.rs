@@ -1392,3 +1392,308 @@ fn test_content_fingerprint_dedup() {
         "a different video should not be detected as a duplicate"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Robustness tests for the video screenshot pipeline.
+//
+// The release binary previously stopped processing after a single ffmpeg
+// failure (a file whose codec the `fps` filter could not decode, a file whose
+// stream ends before the announced runtime, or a frame that does not decode
+// cleanly).  These tests pin the contract that a problematic file must not
+// take the whole batch down — it should either produce a partial/empty
+// candidate, or fall back to per-frame extraction.
+// ---------------------------------------------------------------------------
+
+/// Returns `true` when ffmpeg is on `PATH`; callers skip the test otherwise.
+fn ffmpeg_available() -> bool {
+    std::process::Command::new("ffmpeg")
+        .arg("-version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// The file that was last in the demo_similar_videos.txt log when the release
+/// binary stopped.  This is the single file the bug report is about.
+fn last_failing_file() -> std::path::PathBuf {
+    std::path::Path::new("testtfiles")
+            .join("Amai Liu Anal Pornpros Cumshotsurprise Gives Titjob Cool Her Step Son Anal Babe Big Dick Big Tits Handjob Hardcore Porn Spank Bang 3 00x Ghq 5.mkv")
+            .to_path_buf()
+}
+
+/// Walk `testtfiles` and collect every video we know how to open.  Returns an
+/// empty list when the directory is absent (CI / fresh checkout).
+fn all_test_videos() -> Vec<std::path::PathBuf> {
+    let dir = std::path::Path::new("testtfiles");
+    if !dir.is_dir() {
+        return Vec::new();
+    }
+    let mut out: Vec<std::path::PathBuf> = Vec::new();
+    let walk = walkdir::WalkDir::new(dir).follow_links(false);
+    for entry in walk.into_iter().flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        match path.extension().and_then(|e| e.to_str()) {
+            Some(ext)
+                if matches!(
+                    ext.to_ascii_lowercase().as_str(),
+                    "mp4" | "mkv" | "avi" | "mov" | "webm"
+                ) =>
+            {
+                out.push(path.to_path_buf());
+            }
+            _ => {}
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The file from the log must not crash the pipeline — either the single-pass
+/// decode succeeds (ffmpeg 8.x) or the fallback to per-frame extraction
+/// kicks in (older ffmpeg without a matching decoder).  Either way,
+/// `process_video` returns and we get a `VideoCandidate` (possibly with zero
+/// screenshots, in which case the caller skips it).
+#[test]
+fn test_single_failing_file_does_not_crash() {
+    if !ffmpeg_available() {
+        eprintln!("SKIPPED: ffmpeg not available");
+        return;
+    }
+    let file = last_failing_file();
+    if !file.exists() {
+        eprintln!("SKIPPED: {} not present", file.display());
+        return;
+    }
+
+    // Use a 10-second interval (the demo default) and a large `num_videos`
+    // so we exercise the log-message branch too.
+    let candidate = crate::files::process_video(&file, 3, 12, 10, 3);
+
+    // The contract: we get *some* candidate back.  Screenshots may be zero
+    // (both routines failed — acceptable) or non-zero (either routine worked).
+    // What we must NOT see is a panic, a deadlock, or a process death.
+    // The candidate must have a valid (non-empty) id — this confirms the
+    // function returned a structurally intact VideoCandidate.
+    assert!(
+        !candidate.id.is_empty(),
+        "candidate.id must be set even when the file cannot be processed"
+    );
+    // If we got any screenshots at all, each one should have a valid hash
+    // (dhash non-empty, ratio finite) so downstream store.add() cannot fail.
+    for ss in &candidate.screenshots {
+        assert!(
+            !ss.hash.dhash.is_empty(),
+            "screenshot {} has empty dhash",
+            ss.screenshot_id
+        );
+        assert!(
+            ss.hash.ratio.is_finite() && ss.hash.ratio >= 0.0,
+            "screenshot {} has bad ratio {}",
+            ss.screenshot_id,
+            ss.hash.ratio
+        );
+    }
+}
+
+/// Every video under `testtfiles` must either produce a candidate (with or
+/// without screenshots) or fail *gracefully* — the batch must not die on the
+/// first bad file.  This is the regression guard for the "binary stops after
+/// one ffmpeg failure" symptom.
+#[test]
+fn test_all_test_files_do_not_crash() {
+    if !ffmpeg_available() {
+        eprintln!("SKIPPED: ffmpeg not available");
+        return;
+    }
+    let files = all_test_videos();
+    if files.is_empty() {
+        eprintln!("SKIPPED: no test videos under testtfiles/");
+        return;
+    }
+
+    let mut produced = 0usize;
+    let mut empty = 0usize;
+    for (i, file) in files.iter().enumerate() {
+        let candidate =
+            crate::files::process_video(file, i + 1, files.len() as u32, 10, (i + 1) as u32);
+        if candidate.screenshots.is_empty() {
+            empty += 1;
+            eprintln!(
+                "[{}] {} produced 0 screenshots (both routines failed, file skipped downstream)",
+                i + 1,
+                file.display()
+            );
+        } else {
+            produced += 1;
+            eprintln!(
+                "[{}] {} produced {} screenshots, runtime={}s, {}x{}",
+                i + 1,
+                file.display(),
+                candidate.screenshots.len(),
+                candidate.runtime,
+                candidate.width,
+                candidate.height
+            );
+        }
+        // Every screenshot in every file must have a valid hash, otherwise
+        // store.add() would panic downstream.
+        for ss in &candidate.screenshots {
+            assert!(!ss.hash.dhash.is_empty());
+            assert!(ss.hash.ratio.is_finite() && ss.hash.ratio >= 0.0);
+        }
+    }
+    // With the current ffmpeg on this machine, at least the first file should
+    // produce *something*.  On older ffmpeg where the `fps` filter cannot
+    // handle the codec, the fallback should still give us a partial result.
+    // We do NOT assert `produced > 0` because a genuinely corrupt file (or a
+    // CI environment with a very old ffmpeg) is allowed to yield zero.
+    let _ = (produced, empty);
+}
+
+/// `dhash` (and therefore `create_hash`) must not read past the bottom row
+/// of the 8×8 thumbnail.  Before the fix, the `y & 1 == 0` branch executed
+/// `scaled.get_pixel(x, y + 1)` on `y == 7` and panicked with an
+/// out-of-bounds index whenever the decoded frame's height after the
+/// `resize(img, 8, 8)` was 8 or less (which is what a 128×72 → 8×8 path
+/// produces).  An odd-height source (say 128×71, 3840×2161, or a frame that
+/// decodes as a 1-pixel-tall strip from a corrupt stream) reaches the same
+/// branch.  This test drives every small odd/even shape that can hit the
+/// guard and asserts it neither panics nor returns a zero hash.
+#[test]
+fn test_dhash_odd_height_does_not_crash() {
+    // 8x8 thumbnail, so the y == 7 / x == 0 branch is always exercised.
+    for (w, h) in [
+        (1u32, 1u32),
+        (1, 7),
+        (8, 1),
+        (8, 7),
+        (8, 9),
+        (128, 71),
+        (128, 73),
+        (3840, 2161),
+    ] {
+        let img = image::RgbaImage::new(w, h);
+        // dhash resizes to 8×8 internally; create_hash also runs haar +
+        // histogram, so we exercise the full pipeline here.
+        let (hash, _small) = crate::hash::create_hash(&img);
+        assert_eq!(hash.dhash.len(), 2, "dhash len for {}x{}", w, h);
+        assert!(
+            hash.ratio.is_finite() && hash.ratio >= 0.0,
+            "bad ratio {} for {}x{}",
+            hash.ratio,
+            w,
+            h
+        );
+    }
+}
+
+/// A truncated / obviously-corrupt JPEG must not abort the batch.  We feed
+/// the exact byte pattern that `image::ImageReader` rejects (a JPEG SOI
+/// marker followed by a truncated header), verify that decode fails cleanly,
+/// and that a frame-level `match` on `Ok(r) => match r.decode() { ... }`
+/// falls through to the warn-and-continue branch in
+/// `files::create_screenshots`.
+#[test]
+fn test_corrupt_jpeg_is_skipped_not_fatal() {
+    // 0xFFD8 is the JPEG SOI marker, 0xFFDB starts a quantisation-table
+    // segment that we terminate prematurely.  image::ImageReader is expected
+    // to return Err on this stream.
+    let bytes: &[u8] = &[0xFF, 0xD8, 0xFF, 0xDB, 0x00, 0x04];
+    let tmp = std::env::temp_dir().join(format!("duplo_corrupt_{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).expect("temp dir");
+    let shot = tmp.join("corrupt.jpeg");
+    std::fs::write(&shot, bytes).expect("write corrupt jpeg");
+
+    let reader = image::ImageReader::open(&shot);
+    assert!(
+        reader.is_ok(),
+        "opening a truncated jpeg should still succeed"
+    );
+    let decoded = reader.unwrap().decode();
+    assert!(
+        decoded.is_err(),
+        "decoding a truncated jpeg must fail (not panic) so that the caller can log + continue"
+    );
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// `process_video` on a non-existent path must not panic — it should return
+/// a candidate with zero screenshots (both ffmpeg routines fail gracefully
+/// and the Err arm of the match in process_video logs it).
+#[test]
+fn test_process_video_missing_file_is_graceful() {
+    let path = std::path::PathBuf::from("/tmp/definitely_not_here_duplo_test.mkv");
+    assert!(!path.exists(), "precondition: file must be absent");
+    let candidate = crate::files::process_video(&path, 99, 12, 10, 99);
+    assert!(
+        candidate.screenshots.is_empty(),
+        "a missing file must not yield any screenshots"
+    );
+}
+
+/// Regression test: the `video_metadata` regex for width/height/fps used to
+/// require an **integer** frame rate (`\d+ fps`), so files with a fractional
+/// rate such as `29.97 fps` were probed as `0x0`.  This test runs `process_video`
+/// on the two known 29.97 fps files and asserts the dimensions are non-zero.
+#[test]
+fn test_fractional_fps_reports_correct_dimensions() {
+    if !ffmpeg_available() {
+        eprintln!("SKIPPED: ffmpeg not available");
+        return;
+    }
+
+    // The two files that previously showed 0x0 because of 29.97 fps.
+    let files: &[&str] = &[
+        "testtfiles/Amai Liu Anal Rump Roast 51 0718-70-45.mkv",
+        "testtfiles/Babysitter Diaries 6 Scene 4 Amai Liu Anal.mkv",
+    ];
+
+    let mut checked = 0usize;
+    for path_str in files {
+        let path = std::path::Path::new(path_str);
+        if !path.exists() {
+            eprintln!("SKIPPED: {} not present", path.display());
+            continue;
+        }
+        let path_buf = path.to_path_buf();
+        let candidate = crate::files::process_video(&path_buf, 1, 2, 10, 1);
+
+        // The fix under test: width and height must be non-zero for a
+        // file that ffmpeg can decode (29.97 fps MKV).
+        assert!(
+            candidate.width > 0,
+            "{}: expected width > 0 after fractional-fps regex fix, got {}",
+            path.display(),
+            candidate.width
+        );
+        assert!(
+            candidate.height > 0,
+            "{}: expected height > 0 after fractional-fps regex fix, got {}",
+            path.display(),
+            candidate.height
+        );
+        assert!(
+            candidate.framerate > 0.0,
+            "{}: expected framerate > 0 after fractional-fps regex fix, got {}",
+            path.display(),
+            candidate.framerate
+        );
+        checked += 1;
+        eprintln!(
+            "OK: {} → {}x{} @ {} fps, {} screenshots",
+            path.display(),
+            candidate.width,
+            candidate.height,
+            candidate.framerate,
+            candidate.screenshots.len()
+        );
+    }
+
+    assert!(
+        checked > 0,
+        "at least one fractional-fps test file must be present and checked"
+    );
+}

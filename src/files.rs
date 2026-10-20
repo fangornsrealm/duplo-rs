@@ -445,7 +445,9 @@ fn video_metadata(filepath: &str) -> Result<VideoMetadata, Box<dyn std::error::E
             meta.duration = hours * 3600 + minutes * 60 + seconds;
         }
     }
-    if let Ok(re_video) = Regex::new(r"(?i), (?P<width>\d+)x(?P<height>\d+).*, (?P<fps>\d+) fps") {
+    if let Ok(re_video) =
+        Regex::new(r"(?i), (?P<width>\d+)x(?P<height>\d+).*, (?P<fps>\d+(?:\.\d+)?) fps")
+    {
         if let Some(caps) = re_video.captures(&stderr) {
             meta.width = string_to_uint(&caps["width"]);
             meta.height = string_to_uint(&caps["height"]);
@@ -455,10 +457,101 @@ fn video_metadata(filepath: &str) -> Result<VideoMetadata, Box<dyn std::error::E
     Ok(meta)
 }
 
+/// Per-frame fallback: extract one frame at each timecode using separate
+/// `ffmpeg -ss` invocations.  This is the older approach that handles
+/// codecs/containers the single-pass `fps` filter cannot (e.g. certain
+/// HEVC/MKV combinations on ffmpeg builds without a matching decoder).
+///
+/// Returns the paths of successfully extracted JPEGs, in timecode order.
+/// Stops early if a frame fails to extract (the stream most likely ended
+/// before the announced runtime, or the codec is truly unsupported).
+fn extract_per_frame(
+    filepath: &str,
+    tmp_dir: &std::path::Path,
+    meta: &VideoMetadata,
+    num_seconds_between_screenshots: u32,
+) -> Vec<std::path::PathBuf> {
+    if num_seconds_between_screenshots == 0 {
+        return Vec::new();
+    }
+
+    // Derive the upper bound from the probed duration.  If the probe failed
+    // (duration == 0, e.g. corrupt metadata) use a generous default so we
+    // still sample the stream.
+    let duration = if meta.duration > 0 {
+        meta.duration
+    } else {
+        600 // 10 minutes — safe upper bound for unknown-length streams
+    };
+
+    let mut frames: Vec<std::path::PathBuf> = Vec::new();
+    let mut timecode = num_seconds_between_screenshots;
+    let mut frame_num: u32 = 1;
+
+    while timecode < duration {
+        let output = format!(
+            "{}/shot_{:05}.jpeg",
+            tmp_dir.to_str().unwrap_or_default(),
+            frame_num
+        );
+
+        let result = std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-ss",
+                &timecode.to_string(),
+                "-i",
+                filepath,
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale=128:-2",
+                "-q:v",
+                "2",
+                &output,
+            ])
+            .output();
+
+        match result {
+            Ok(ref o) if o.status.success() => {
+                let path = std::path::PathBuf::from(&output);
+                if path.is_file() {
+                    frames.push(path);
+                }
+            }
+            Ok(ref o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                log::warn!(
+                    "Per-frame extraction at t={}s failed ({}): {}",
+                    timecode,
+                    filepath,
+                    stderr.trim()
+                );
+                // The stream most likely ended or the codec is unsupported.
+                // Continuing would just produce more failures.
+                break;
+            }
+            Err(e) => {
+                log::warn!(
+                    "Failed to spawn ffmpeg for per-frame extraction at t={}s: {}",
+                    timecode,
+                    e
+                );
+                break;
+            }
+        }
+
+        timecode += num_seconds_between_screenshots;
+        frame_num += 1;
+    }
+
+    frames
+}
+
 /// Extract one screenshot every `num_seconds_between_screenshots` seconds from
-/// a video file, using a **single** ffmpeg decode pass (instead of spawning a
-/// separate `ffmpeg -ss` process per frame). Screenshots are written to a
-/// temporary directory, decoded + hashed, and then cleaned up.
+/// a video file.  Prefers a **single** ffmpeg decode pass for speed; if that
+/// produces no frames (unsupported codec, corrupt stream, etc.) falls back to
+/// the per-frame `ffmpeg -ss` extraction approach.
 ///
 /// The `scale=128:-2` filter down-scales inside ffmpeg so we never pay the
 /// cost of JPEG-decoding a full-resolution frame in Rust.
@@ -469,7 +562,7 @@ fn create_screenshots(
     num_seconds_between_screenshots: u32,
     id_in_files_to_process: u32,
 ) -> Result<(Vec<crate::videocandidate::Screenshot>, VideoMetadata), Box<dyn std::error::Error>> {
-    let meta = video_metadata(filepath)?;
+    let mut meta = video_metadata(filepath)?;
 
     // Use a unique temp dir so parallel workers don't clobber each other.
     let tmp_dir =
@@ -485,7 +578,7 @@ fn create_screenshots(
         tmp_dir.to_str().ok_or("invalid temp dir path")?
     );
 
-    let ffmpeg_output = std::process::Command::new("ffmpeg")
+    let _ffmpeg_output = std::process::Command::new("ffmpeg")
         .args([
             "-y",
             "-i",
@@ -502,44 +595,72 @@ fn create_screenshots(
             format!("failed to execute ffmpeg: {}", e)
         })?;
 
-    if !ffmpeg_output.status.success() {
-        let stderr = String::from_utf8_lossy(&ffmpeg_output.stderr);
-        log::error!(
-            "ffmpeg failed for video {} of {} ({}): {}",
+    // Collect frames produced by the single-pass decode (zero-padded by
+    // ffmpeg).  A non-zero exit or an unreadable dir simply yields an empty
+    // list, which triggers the per-frame fallback below.
+    let mut frames: Vec<std::path::PathBuf> = match std::fs::read_dir(&tmp_dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map_or(false, |ext| ext == "jpeg"))
+            .collect(),
+        Err(e) => {
+            log::warn!(
+                "Failed to read temp dir {} for video {} of {} ({}): {}",
+                tmp_dir.display(),
+                id_in_files_to_process,
+                num_videos,
+                filepath,
+                e
+            );
+            Vec::new()
+        }
+    };
+    frames.sort();
+
+    // If the single-pass produced no usable frames, fall back to the
+    // per-frame seek-and-extract approach.  The old per-frame routine was
+    // confirmed to parse files that the single-pass `fps` filter cannot
+    // handle (e.g. certain HEVC/MKV combinations on older ffmpeg builds).
+    if frames.is_empty() {
+        log::warn!(
+            "Single-pass ffmpeg produced 0 frames for video {} of {} ({}); \
+             falling back to per-frame extraction",
             id_in_files_to_process,
             num_videos,
-            filepath,
-            stderr.trim()
+            filepath
+        );
+        frames = extract_per_frame(filepath, &tmp_dir, &meta, num_seconds_between_screenshots);
+        frames.sort();
+    }
+
+    if frames.is_empty() {
+        // Both approaches failed — the file is truly unreadable.
+        log::error!(
+            "No screenshots could be extracted for video {} of {} ({})",
+            id_in_files_to_process,
+            num_videos,
+            filepath
         );
         std::fs::remove_dir_all(&tmp_dir).ok();
         return Ok((Vec::new(), meta));
     }
 
     log::warn!(
-        "Created screenshots for video {} of {} ({})",
+        "Created {} screenshot(s) for video {} of {} ({})",
+        frames.len(),
         id_in_files_to_process,
         num_videos,
         filepath
     );
 
-    // Read the produced JPEGs in filename order (zero-padded by ffmpeg).
-    let mut frames: Vec<std::path::PathBuf> = std::fs::read_dir(&tmp_dir)
-        .map_err(|e| {
-            std::fs::remove_dir_all(&tmp_dir).ok();
-            format!("failed to read temp dir {}: {}", tmp_dir.display(), e)
-        })?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|p| p.extension().map_or(false, |ext| ext == "jpeg"))
-        .collect();
-    frames.sort();
-
+    // Decode + hash each frame.  Individual decode failures are logged and
+    // skipped — a corrupt JPEG should not abort the whole video.
     let mut v = Vec::new();
     let mut screenshot_id: usize = 1;
     for frame_path in &frames {
         let timecode = (screenshot_id as u32) * num_seconds_between_screenshots;
-        let reader = image::ImageReader::open(frame_path);
-        match reader {
+        match image::ImageReader::open(frame_path) {
             Ok(r) => match r.decode() {
                 Ok(img) => {
                     let rgba: image::RgbaImage = img.into();
@@ -566,6 +687,13 @@ fn create_screenshots(
             }
         }
         screenshot_id += 1;
+    }
+
+    // Correct the runtime if the probe returned 0 (corrupt/missing metadata)
+    // but we successfully extracted frames.
+    if meta.duration == 0 && !v.is_empty() {
+        meta.duration =
+            v.len() as u32 * num_seconds_between_screenshots + num_seconds_between_screenshots / 2;
     }
 
     // Clean up the temp directory regardless of success/failure.
