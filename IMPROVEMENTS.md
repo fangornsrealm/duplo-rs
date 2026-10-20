@@ -28,7 +28,7 @@ Impact legend: **[H]**igh · **[M]**edium · **[L]**ow. Effort: **S** ≤ ~1 hr,
 | §11 | Marshalling endianness | ⏳ Deferred (format change; local files, same-arch — see note) | — |
 | §15 | Observability: `explain_screenshot()` + `print_metrics()` | ✅ Done | `207fe6a` |
 | §16.2 | Two-pass scoring (collect candidates, then score) | ✅ Done | (was already implemented) |
-| §16.4 | Content-hash dedup (renamed duplicates) | ✅ Done | pending |
+| §16.4 | Content-hash dedup (renamed duplicates) | ✅ Done | `9399ecd` |
 | §16.1 | Purpose-built mmap index file | ⏳ Deferred (useful only at >50k videos) | — |
 | §16.3 | LMDB instead of SQLite | ⏳ Deferred (not needed after §1 compact storage) | — |
 | §16.5 | tokio-friendly facade | ⏳ Deferred (tool is not async) | — |
