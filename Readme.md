@@ -13,7 +13,7 @@ The user can fine-tune the sensitivity of the similarity of the screenshots sear
 - 100 means that only resized images will be seen as similar.
 - 0 means that quite heavy modifications are allowed. Also it means that the center piece of the image can change a lot. For example a model shoot series will detect similar images with different poses of the model. The same setup with a different model might also match.
 
-The user can also play with the seconds between the screenshots. The example application takes six screenshots per minute of runtime. That is very precise but **extremely** slow! One snapshot per minute might be more appropriate for longer videos. One every five minutes is even faster. But the chance to hit a similar screenshot get much smaller unless you are scanning exactly the same video.
+The user can also play with the seconds between the screenshots. The example application takes six screenshots per minute of runtime. That is very precise but **quite** slow! One snapshot per minute might be more appropriate for longer videos. One every five minutes is even faster. But the chance to hit a similar screenshot get much smaller unless you are scanning exactly the same video.
 
 The user can and should also play with the number of frames in a row that have to match. Start with one frame to see how good your image matching parameters work. If you have too many false positives increase the sequence length.
 
@@ -105,9 +105,9 @@ let (matches, failedid, _failedhash) =
 // matches[0] is the best match.
 ```
 
-The search for similar videos in the database has to be done one by one. The speed is severely limited. Each new video will be compared screenshot by screenshot. As a rough estimate with six screenshots a minute the comparison takes 1 to 2 minutes for five minutes of video. If you have memory to spend, the library offers to store the last N used videos data in memory for speeding up the search. But for 100 videos this will block 10 to 15 Gigabytes of the memmory of the machine for as long as the program runs! For the default settings of the demo app.
+The modified search does the same but is much quicker, but for defective video files it just fails. In cases that don't deliver a valid result the old, slow method is used.
 
-A trade-off between the running time and the quality of similar video detection is necessary depending on what needs to be detected.
+A trade-off between the running time and the quality of similar video detection is advisable depending on what needs to be detected.
 
 The demo app is designed on the precision side of the evaluation. It takes a screenshot every 10 seconds and considers a minimum length of 1 minute as a similar video. Outside of Music or TikTok videos scenes are longer than 10 seconds. So the probability to find a similar frame in a modified video is good.
 
@@ -125,6 +125,6 @@ A screenshot every five minutes would be much faster and use 30x less resources,
 
 ## Optimizations
 
-The performance of video comparison is not good. And requires way too much resources.
+The performance of video comparison was not good. And requires way too much resources.
 
-As we don't have the time to test and optimize this by hand we asked an LLM (Quen3.8 27B) to take a look.
+As we don't have the time to test and optimize this by hand we asked an LLM (Quen3.8 27B) to take a look. And it delivered.
